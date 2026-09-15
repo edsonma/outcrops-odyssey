@@ -1,0 +1,49 @@
+commit 8b14561bc68eae22a96e0d904cc2581411ba2dbe
+Author: Amir Rajan <ar@amirrajan.net>
+Date:   Sun Jul 19 15:44:22 2026 -0500
+
+    Fixes compile_ruby flag which would fail for integer values larger INT32.
+    
+    Example ruby code that would fail to load from bytecode:
+    
+    Repro within DragonRuby (requires Indie/Pro license):
+    
+    ```
+    c = FFI::Compiler.new
+    c.dump_codegen "puts 2166136261"
+    ```
+    
+    ```
+    00001 NODE_SCOPE:
+    00001   NODE_BEGIN:
+    00001     NODE_FCALL:
+    00001       NODE_SELF
+    00001       method='puts' (274)
+    00001       args:
+    00001         NODE_INT 2166136261 base 10
+    irep 0xbd89fc500 nregs=4 nlocals=1 pools=1 syms=1 reps=0 iseq=12
+          000 OP_LOADSELF   R1
+          002 OP_LOADL      R2      L(0)   ; 2166136261
+          005 OP_SEND       R1      :puts  1
+          009 OP_RETURN     R1
+          011 OP_STOP
+    ```
+    
+    ```
+    c = FFI::Compiler.new
+    c.compile_ruby "app/compiled.rbc", "puts 2166136261"
+    require "app/compiled.rb"
+    ```
+
+diff --git a/mruby/src/load.c b/mruby/src/load.c
+index 93c16a5e15..d29ea9d4ee 100644
+--- a/mruby/src/load.c
++++ b/mruby/src/load.c
+@@ -153,6 +153,7 @@ read_irep_record_1(mrb_state *mrb, const uint8_t *bin, size_t *len, uint8_t flag
+           i64 <<= 32;
+           i64 |= bin_to_uint32(src);
+           src += sizeof(uint32_t);
++          pool[i].tt = IREP_TT_INT64;
+           pool[i].u.i64 = (int64_t)i64;
+         }
+         break;

@@ -1,0 +1,338 @@
+* 7.18
+** [Pro] [Steam] If SteamOS is launched in Big Screen mode, game will also be set to full screen.
+** [Pro] [Shaders] Added ability to define uniforms.
+   Sample app location: ==samples/14_shaders/04_uniforms=
+** [Support] dragonruby-publish excludes errors directory when publishing.
+** [Support] dragonruby-publish warns about certification failure risk if game title contains "Demo" or "Lite"
+** [Bugfix] Fixed game pad registration scenario that would cause inputs.controller_* to point to the same controller.
+** [Bugfix] Emscripten index db no longer loses save data.
+** [Bugfix] Orientation changed event is only registered if game_metadata supports both portrait and landscape.
+* 7.17
+** [Pro] [Android] Target SDK for Android bumped to API 36 (Google Play compliance).
+** [Sample] Updated =samples/07_advanced_rendering_hd/06_multi_platform_multi_orientation= to use modern DR Apis.
+* 7.16
+** [Pro] [Shaders] Shaders early access has been released.
+   We are in the experimental phase with shaders. Apis will break, there will be
+   bugs and missing features. USE AT OWN RISK. Post feedback to DR's Discord
+   server under the #shaders channel.
+
+   Sample apps for shaders are located at =samples/14_shaders=.
+** [Pro] [Web] Workaround added to web builds showing a black screen
+   If zoom level isn't 100% We are still trying to find the root cause of this. For now, if the zoom level
+   on your game's Itch.io landing page is not 100%, DR will present the link to pop out into a seperate window.
+   We love iframes. They are the best thing in the world.
+** [Samples] Animations queues sample app updated to use modern DR apis.
+   Sample app location: =samples/08_tweening_lerping_easing_functions/07_animation_queues_advanced=
+** [Samples] Shadows platformer reference implementation updated to user modern DR apis.
+   Sample app location: =samples/99_genre_platformer/shadows=
+** [Support] DR will warn you if a source file is reaching codegen limits.
+** [Bugfix] Window and mouse focus state is correctly reset when DR.reboot is invoked.
+* 7.15
+** [Bugfix] Ensure controller connections are wired up on boot and reset.
+** [Sample] Added example of a platformer game with dashing and wallkicking to =samples/99_genre_lowrez=
+   Sample app location: =samples/99_genre_lowrez/platformer_128x128=
+* 7.14
+** [Pro] [Support] =metadata/game_metadata.txt= ~highdpi=true~ can be used even when ~hd=false~
+   This will yield sharper textures without sub-pixel rendering.
+** [Pro] [Bugfix] Fixed failure when ~compile_ruby=true~ and integer values larger INT32 are encountered.
+** [Bugfix] ~inputs.mouse.wheel.(x|y)~ now returns fractional values (higher precision scrolling).
+** [Bugfix] Sprites are reset when ~DR.reboot~ is invoked.
+** [Support] DR targets SDL 3.4.13.
+** [Support] Additional improvements to frame pacing and simulation/render thread synchronization.
+** [Support] ~Grid.origin~ can be controlled via =metadata/game_metadata.txt=
+   #+begin_src ruby
+     # DEFAULT
+     origin=bottom_left
+     # OR
+     origin=center
+   #+end_src
+** [Support] Added ~DR.(read|write)_save_data~.
+   Some locked-down platforms have a dedicated save enclaves where user data is managed. Prefer this
+   function for reading/writing user specific data over ~DR.(read|write)_file~ (functions added specifically to handle
+   consoles and save data management).
+
+   See =samples/99_genre_board_game/03_word_game= for usage (and docs for more details).
+** [Support] Mobile web's default touch events have been suppressed (eg magnification/text select on long press).
+** [Support] DragonRuby now has dedicated metadata for building low res games via ~aspect_mode~ and ~aspect_size~.
+   Sample apps under =samples/99_genre_lowrez= have been updated to showcase this feature:
+   - lowrez_hello_world
+   - lowrez_labels
+   - nokia_3310
+   - nokia_3310_snake
+   - resolution_64x64
+   - resolution_64x64_with_touch_controls
+*** 16x9 aspect ratios ~aspect_mode=0~ (default)
+    - 84x48 (perfect for Nokia Jam)
+    - 114x64
+    - 128x72
+    - 160x90
+    - 228x128
+    - 256x144 (good candidate for low res 16x9)
+    - 320x180
+    - 454x256
+    - 640x360
+    - 910x512
+    - 1024x576
+    - 1280x720 (default)
+*** 1x1 aspect ratios ~aspect_mode=1~
+    - 32x32
+    - 64x64 (perfect for LOWREZ Jam)
+    - 128x128 (defacto aspect ratio for fantasy consoles)
+    - 256x256
+    - 512x512
+    - 720x720
+** [Support] Low res font =tiny.ttf= ships with DR.
+   Use ~size_px: 10~ for smallest rendering, and use multiples of 10 for increasing sizes (eg ~20~, ~30~, ~40~, etc).
+
+   See =samples/99_genre/lowrez_labels= for demonstration of =tiny.ttf=.
+** [Support] ~outputs.watch~ accepts ~size_px~ and ~font~ as optional parameters.
+   Example:
+
+   #+begin_src ruby
+     def tick args
+       args.outputs.watch "#{Kernel.tick_count}", size_px: 20, font: "tiny.ttf"
+     end
+   #+end_src
+* 7.13
+** [Bugfix] ~DR.write_file~ returns ~true~ instead of ~false~ if file write was successful.
+** [Support] Improved A11y emulation/VoiceOver functionality on MacOS.
+** [Support] MacOS now has release support for VoiceOver (similar to iOS).
+   See sample app: =samples/09_ui_controls/04_accessiblity_for_the_blind=
+
+   Future releases will expand support to other OS'es and include support for game pads.
+** [Support] Additional improvements to frame pacing algorithm to avoid stutter between frames.
+   - Rationale of no delta time (specifically the Decoupled Rendering section): https://medium.com/@tglaiel/how-to-make-your-game-run-at-60fps-24c61210fe75
+   - Cognative overhead with delta time: https://www.youtube.com/watch?v=yGhfUcPjXuE
+** [Support] Added ~DR.platform?(:console|:ps5|:switch|:switch2)~
+   Future releases of DR will have auditing mechanisms in place to ensure your game will
+   have the best chance of passing certification (if/when your game gets approval for release on console).
+** [Support] Improved ~String.wrapped_lines~ to handle multibyte char sets (ie Kanji character set).
+** [Support] ~args.outputs.solids~ and ~primitive_marker: :solid~ has been deprecated.
+   Warning will be shown if ~solids~ is used. Using ~sprites~ with ~path: :solid~ is comprable to
+   the ~solid~ primitive and is many multiples faster to render.
+
+   Instead of:
+
+   #+begin_src ruby
+     args.outputs.solids << {
+       x: 0,
+       y: 0,
+       w: 100,
+       h: 100,
+       r: 255,
+       g: 255,
+       b: 255,
+       a: 128
+     }
+   #+end_src
+
+   Do:
+
+   #+begin_src
+     args.outputs.sprites << {
+       x: 0,
+       y: 0,
+       w: 100,
+       h: 100,
+       path: :solid, # <-- use :solid as the path
+       r: 255,
+       g: 255,
+       b: 255,
+       a: 128
+     }
+   #+end_src
+* 7.12
+** [Support] Improvements to stutter reduction.
+* 7.11
+** [Samples] Added =samples/07_advanced_audio/04_synchronized_audio=
+   Special thanks to [[traviswattigney.com][Travis Wattigney]] [[@traviswattigney][Instagram]]
+   for providing bad ass audio tracks under MIT.
+** [Bugfix] Ensure that initial bits of audio do not cut out when played.
+   The sample =samples/07_advanced_audio/04_synchronized_audio= definitely maybe proves that this is now fixed.
+** [Bugfix] Playback of audio picks up where it left off for audio what was paused, then subsequently unpaused.
+   Ryan is banned from updating mojoAL ever again.
+* 7.10
+** [Support] Added license information to =open-source-licenses.txt= for default font used in DR.
+** [Support] Improved ~args.audio~ requeue behavior of Hash instances that have been previously used.
+** [Support] ~args.audio~ proactively throws an exception if object queued isn't a ~Hash~ (or ~nil~).
+   As opposed to segfaulting within C code when object isn't a ~Hash~
+** [Support] Improved warnings about queueing audio instances that are still in use.
+* 7.9
+** [Bugfix] ~looping~ property is respected on objects sent to ~args.audio~.
+* 7.8
+** [Pro] [News] Experimental release of new shader capabilities queued for the first week of July.
+** [Support] Increased max limit of texture entries to 2048.
+   More textures will be cached behind the scenes before cache ejection occurs.
+** [Support] Improved audio playback synchronization/performance.
+   Machinery moved to C. Removed unnecessary resynchronization calls
+   during ~tick~.
+** [Support] Added warning + backtrace for audio references that are already playing.
+   Warning message about queueing a ~Hash~ reference that's already
+   playing will print the callstack before skipping the queue request.
+** [Bugfix] Audio playtime now returns the correct value for the seek head.
+** [Support] Added ~Grid#refresh_rate~.
+** [Bugfix] Fixed high CPU usage while waiting for export of render primitives.
+   Displays with high refresh rates (mobile devices specifically) had
+   high CPU usage while waiting for what to render next. Regression
+   was introduced in 6.51.
+* 7.7
+** [Bugfix] Fixed HTTP apis for web builds.
+   Emscripten 5 changed ~Module.HEAPU8.set~ to ~HEAPU8.set~.
+** [Bugfix] Fixed framerate drops on Steam Deck (Linux x86_64).
+** [Bugfix] Fixed audio playback for web builds.
+   Cause was uninitialized pointer in PHYSFS (audio playback
+   accidentally worked if stack was aligned).
+
+   I asked Ryan when we were going to rewrite everything in Rust. He muted me.
+** [Supported] Updated Linux SDL builds to include Wayland.
+* 7.6
+** [Pro] [Support] [iOS] Added entitlements explaining that bluetooth is required for gamepads.
+** [Pro] [Support] [iOS] Improvements to IOSWizard.
+   - Checks to see if imagemagick is installed.
+   - Icons for all devices sizes are generated automatically off of =./metadata/icon_ios.png=.
+   - Game will auto launch after installation.
+** [Support] ~dragonruby-publish~ now warns if audio files are not encoded correctly.
+** [Support] ~dragonruby-publish~ warning messages moved as a summary after build is completed.
+   Summary includes warnings about audio encoding, and warnings about file names with spaces and/or capital letters.
+** [Support] Removed warning message when ctrl+r shortcut is used to reset the game.
+** [Support] Improved invalidation of cached textures and render targets when reset occurs.
+** [Support] libSDL recompiled without camera apis.
+** [Support] RNG stable for replays regardless of whether it's started from CLI or through HUD.
+** [Bugfix] Fixed ~mouse.(relative_x|relative_y)~ to report correct values on monitors with high refresh rates.
+** [Bugfix] Fixed game focus issue when game is started up in dev mode on MacOS.
+** [Bugfix] Game's window size starts up at a logical 720p on Windows for any combination of hd/highdpi.
+** [Bugfix] Terminal on Windows correctly redirects logs to standard out instead of giving a blank screen.
+   Special thanks to RedComputer@discord, Lucas@discord, red_garuda@discord, redbeehive@discord,
+   Trevor@discord, and Null@discord for reporting/testing bugs that Ryan introduced.
+* 7.5
+** [Bugfix] Fixed allocator failures in ~Zlib.(compress|uncompress)~
+   Regression was introduced in 7.0.
+** [Bugfix] =./docs/version.txt= was not being updated on deployments. This has been fixed.
+   Regression was introduced in 7.4 (this was definitely Ryan's fault).
+* 7.4
+** [Support] [Pro] [iOS] iOS Wizard improved.
+   Better error messages (fixed silent failures). Game is uninstalled before deploying a new version.
+** [Support] [Pro] [iOS] Updated entitlements so that Game Mode is enabled by default.
+   This tells the device to give a larger share of resources to the game.
+** [Bugfix] [Support] New functions on ~Numeric~ ~(mid|mid?|between?|min|max)~.
+   See docs for more details.
+** [Bugfix] Fixed Geometry#intersect_circle? to use the correct primitive when testing for intersection.
+** [Bugfix] Keyboard#truthy_keys scrubbed for attr_readers that aren't directly associated with a key on the keyboard.
+** [Support] New ~Controller~ apis added.
+   - Added button aliases for ~y~, ~a~, ~b~, ~x~ -> ~n~/~north~, ~s~/~south~, ~e~/~east~, ~w~/~west~.
+   - Added button ~accept~ and ~cancel~ which contextually maps to A (east) for Switch Controller, X (south) for PS5, and A (south) for Xbox.
+   - ~directional_vector_left~ will give you DPAD + Left Analog
+   - ~directional_vector_right~ will give you Buttons + Right Analog (helpful for twin stick shooters).
+** [Support] ~Main~ module quacks like ~attr_dr~.
+   - ~args~ no longer needs to be passed in to top level functions.
+   - ~args~, ~inputs~, ~outputs~, ~state~, ~events~, and ~audio~ are directly accessible from any function defined in ~Main~.
+   - ~start~ function added to ~Main~ which will run before ~tick~ when ~Kernel.tick_count == 0~.
+
+   Example of new ~Main~ capabilities:
+
+   #+begin_src
+     module Main
+       def boot
+         # invoked once when the game boots
+         puts "boot: #{Kernel.tick_count}"
+       end
+
+       def start
+         # invoked on Kernel.tick_count == 0 before tick is invoked
+         puts "start: #{Kernel.tick_count}"
+         state.some_variable = 0
+       end
+
+       def tick
+         # invoked at 60hz
+         if Kernel.tick_count.zmod?(30)
+           # state top level function
+           state.some_variable += 1
+           puts "state.some_variable: #{state.some_variable}"
+         end
+
+         if Kernel.tick_count.zmod?(60)
+           puts "tick: #{Kernel.tick_count}"
+         end
+
+         # inputs top level function
+         if inputs.keyboard.key_down.enter
+           puts "inputs.keyboard.key_down.enter #{Kernel.tick_count}"
+         end
+
+         # outputs top level function
+         outputs.background_color = [30, 30, 30]
+       end
+
+       def reset
+         # invoked before reset occurs
+         puts "reset #{Kernel.tick_count}"
+       end
+
+       def did_reset
+         # invoked after reset occurs
+         puts "did_reset #{Kernel.tick_count}"
+       end
+
+       def shutdown
+         # invoked once before game exits
+         puts "shutdown #{Kernel.tick_count}"
+       end
+     end
+
+     DR.reset
+   #+end_src
+* 7.3
+** [Bugfix] Ensure that ~hd=true~ is respected in Standard and Indie license tiers.
+** [Support] [Pro] Added ~DR.start_text_input~ and ~DR.stop_text_input~ which will show a virtual keyboard on mobile devices.
+   ~DR.start_text_input~ must be called for ~args.inputs.text~ property
+   to be populated (on touch devices, this will bring up the on-screen
+   keyboard). To dismiss the on-screen keyboard/exit keyboard input, you
+   must call ~DR.stop_text_input~. If ~args.inputs.text~ is consulted in
+   your code, then a warning message will be printed and ~DR.start_text_input~
+   will be called on your behalf.
+
+   =./oss/dragon/console.rb= now leverages these functions.
+** [Known Issues] Synthesis not working on web builds.
+** [Known Issues] Scaling issues for Windows + Chrome + Page Magnification != 100%.
+* 7.2
+** [Bugfix] Reverted ~Geometry#find_collisions~.
+   The change made in 6.47 were incorrectly implemented and changed the original behavior of this function.
+** [Docs] Docs updated for ~Geometry#find_collisions~ to clarify its behavior.
+** [Support] ~Geometry#each_intersect_rect's~ second parameter is optional.
+** [Support] Updated ~Geometry#find_collisions~ to accept an optional second parameter.
+** [Samples] Updated unit tests for ~Geometry~ functions.
+   Sample app location: =samples/10_advanced_debugging/03_unit_tests=
+* 7.1
+** [Bugfix] Ensure that SDL_HINT_MAC_PRESS_AND_HOLD is set to 0.
+** [Bugfix] Fixed mouse location for non-standard aspect ratios when hd=false.
+** [Bugfix] Ensure sprite path's c pointer is exported correctly when sending to the render pipeline.
+* 7.0
+** [IMPORTANT] This release does NOT contain breaking changes. This is an epoch version bump.
+   - DragonRuby is now powered with SDL3 release-3.4.4.
+   - DragonRuby Web Builds now target Emscripten 5.0.4.
+   - Keep an eye out for a devlog entry on Itch about what's coming next (hint: shaders).
+   - NOTE: C-extensions will need to be recompiled (let us know if you have any issues).
+** [Pro] [C Extensions] SDL2 thread and atomic APIs are available as backward-compatible polyfills.
+   The following SDL2 APIs are forwarded to their SDL3 equivalents via =dragonruby.h=:
+   - ~SDL_atomic_t~ (forwards to ~SDL_AtomicInt~)
+   - ~SDL_AtomicSet~ (forwards to ~SDL_SetAtomicInt~)
+   - ~SDL_AtomicGet~ (forwards to ~SDL_GetAtomicInt~)
+   - ~SDL_CreateThread~ (forwards to ~SDL_CreateThreadRuntime~, works on all platforms including Windows)
+   - ~SDL_WaitThread~ (unchanged)
+** [Pro] [Samples] Updated =samples/12_c_extensions/09_handcrafted_thread= to use new SDL3 apis.
+** [Samples] Updated =samples/99_genre_simulation/sand_simulation= to use modern DR apis.
+   It's a much fancier demo than what was previously there.
+** [Samples] Updated =samples/99_genre_simulation/sand_simulation= to use modern DR apis.
+** [Support] HD mode is now available at all license tiers (just a reminder).
+** [Support] The ~scale_quality~ config value in ~metadata/game_metadata.txt~ now supports Pixel Art scaling.
+   - Demo of Pixel Art Scaling: [https://youtu.be/tnHYzaX9y3o]
+   - See cvars docs section and sample located at =samples/01_rendering_basics/06_scale_quality_game_metadata=.
+** [Support] Sprite primitives can accept ~scale_quality_enum~ value ~3~ (which represents Pixel Art scaling).
+** [Support] Label primitives can now accept ~scale_quality_enum~.
+** [Support] Added ~boot~, ~reset~, ~did_reset~, and ~tick~ hook functions to =./docs/oss/dragon/runtime/tick.rb=
+   Reference code can be added to the top of =main.rb= in case you want to change internal behavior of
+   these functions... update at your own risk ;-
+** [Performance] Small performance improvements to glyph caching for fonts/labels.
+** [Performance] Prioritize ~draw_override~ over ~attr_sprite~ when exporting primitives to the render pipeline.
+** [Bugfix] Audio queue safely handles re-assignment of a new audio to a key that already has audio playing.

@@ -1,0 +1,16 @@
+* EXCEPTION:
+* ERROR:
+Undefined method lowrez_mouse for main.
+
+
+** Backtrace:
+*** dragon/object.rb:404:in method_missing_core
+*** dragon/object.rb:411:in method_missing
+*** app/main.rb:109:in calc
+*** app/main.rb:102:in tick
+*** dragon/runtime/tick.rb:76:in tick_core
+*** dragon/runtime.rb:1609:in tick_usr_engine
+*** dragon/runtime.rb:1651:in calc_wrapper
+*** dragon/runtime.rb:1725:in __sdl_tick__simulation__
+*** dragon/runtime.rb:1809:in __sdl_tick__
+*** dragon/vendor/pp.rb:479

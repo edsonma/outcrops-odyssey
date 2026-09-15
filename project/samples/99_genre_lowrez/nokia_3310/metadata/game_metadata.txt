@@ -1,0 +1,38 @@
+devid=dragonruby
+devtitle=DragonRuby LLC
+gameid=sample-app
+gametitle=Sample App
+version=1.0
+icon=metadata/icon.png
+
+# +== Aspect Mode ===
+# | Controls the aspect ratio of your game's logical resolution.
+# | - 0: (default) ~aspect_mode=0~ represents an aspect ratio of 16:9. The following ~aspect_size~ values are allowed:
+# |   -  48  ->    84x48
+# |   -  72  ->   128x72
+# |   -  90  ->   160x90
+# |   - 144  ->  256x144
+# |   - 180  ->  320x180
+# |   - 360  ->  640x360
+# |   - 576  -> 1024x576
+# |   - 720  -> 1280x720 (default)
+aspect_mode=0
+aspect_size=48
+
+# +== Sprite Rendering scale quality ===
+# | Defines the render scale quality for sprites. scale_quality=0 (default) is nearest neighbor, scale_quality=1 is linear, scale_quality=2 is antialiased.
+# | - 0: nearest neighbor (if your game leverages low rez render targets, then this may be the best option)
+# | - 1: best visual quality
+# | - 2: best visual quality (option 1 and 2 are the same and resolve to the same value for backwards compatability)
+# | - 3: SDL3's pixel art shader (if your game uses pixel art, then this may be the best option)
+# +=====================================
+scale_quality=3
+
+# =======================================================
+# === Flags available in DragonRuby Game Toolkit Pro ====
+# =======================================================
+
+# +== High DPI ===
+# | Setting this property to true will enable High DPI rendering
+# +===============
+highdpi=true

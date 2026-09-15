@@ -1,0 +1,28 @@
+devid=dragonruby
+devtitle=DragonRuby LLC
+gameid=sample-app
+gametitle=Sample App
+version=1.0
+icon=metadata/icon.png
+
+# +== Aspect Mode ===
+# | Controls the aspect ratio of your game's logical resolution.
+# | - 1: ~aspect_mode=1~ represents an aspect ratio of 1:1. The following ~aspect_size~ values are allowed:
+# |   - 32  ->     32x32
+# |   - 64  ->     64x64
+# |   - 128  ->  128x128
+# |   - 256  ->  256x256
+# |   - 512  ->  512x512
+# |   - 720  ->  720x720
+aspect_mode=1
+aspect_size=128
+
+
+# =======================================================
+# === Flags available in DragonRuby Game Toolkit Pro ====
+# =======================================================
+
+# +== High DPI ===
+# | Setting this property to true will enable High DPI rendering
+# +===============
+highdpi=true

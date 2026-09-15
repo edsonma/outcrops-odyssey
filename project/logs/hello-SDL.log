@@ -1,0 +1,72 @@
+* [Engine] Log started at 2026/9/15 17:46:59
+* [Engine] DragonRuby Game Toolkit
+* [Engine]   Version: 7.18
+* [Engine]   Tier: Standard
+* [Engine]   GIT Hash: 0d709c3ca703629b1c52e83b39a1846c5752cc98
+* [Engine]   Build Date: Sep 11 2026 11:19:58
+* [Engine] Platform: macOS
+* [Engine] 
+* [Engine] *******************************************************************************************
+* [Engine] *** This is the Standard license build!                                                 ***
+* [Engine] *** Get more with an Indie or Pro license such as C extensions, mobile dev, and Steam!  ***
+* [Engine] *** Details at http://dragonruby.org/#purchase                                          ***
+* [Engine] *******************************************************************************************
+* [Engine] 
+- [Engine] Process Working Directory: /Users/edsonma/workspace/workspace-personal/gaming/outcrops_odyssey/project/
+- [Engine] Game Dir: mygame
+- [Engine] Game ID: hello-SDL
+- [Engine] Game Title: Update metadata/game_metadata.txt in your mygame directory to change this title.
+- [Engine] Game Version: 1.0
+- [Engine] Game Package ID: 
+- [Engine] Game Developer ID: dragonruby
+- [Engine] Game Developer Title: DragonRuby LLC
+- [Engine] Production Build: no
+- [Engine] Remote Hotload: no
+- [Render] SDL Video Backend: cocoa
+- [Render] SDL Renderer Backend: metal
+- [Render] Window Size: 1280x720 (requested 1280x720)
+- [Render] Fullscreen Desktop Mode: no
+- [Render] HD: no
+- [Render] HighDPI: no
+- [Render] Max Texture Size: 16384x16384 (system reported 16384x16384)
+- [Render] Native Resolution: 1280x720
+- [Engine] Aspect Mode: 16:9
+- [Engine] Aspect Size: 720
+- [Render] Logical Resolution: 1280x720
+- [Render] Logical Origin: bottom_left
+? [Engine] RNG seed has been set to 1789505220.
+- [Engine] Janitor is using 4 threads.
+- [Game] * WARNING: ~solid~ primitives have been deprecated. Use ~sprite~.
+
+INSTEAD OF:
+
+#+begin_src
+  args.outputs.solids << {
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 128
+  }
+#+end_src
+
+DO
+
+#+begin_src
+  args.outputs.sprites << {
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    path: :solid, # <-- use :solid as the path
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 128
+  }
+#+end_src
+
+* [Engine] Logging shutting down

@@ -1,0 +1,23 @@
+devid=dragonruby
+devtitle=DragonRuby LLC
+gameid=sample-app
+gametitle=Sample App
+version=1.0
+icon=metadata/icon.png
+
+# set the orientation to portrait
+# touch controls will be rendered at the bottom
+orientation=portrait
+
+# aspect mode is set to 16:9 so that we have
+# extra space on the canvas to render touch controls
+aspect_mode=0
+
+# aspect_size of 64 gives us a canvas 64x114 (in portrait mode)
+aspect_size=64
+
+# pixel art scaling
+scale_quality=3
+
+# DragonRuby Pro allows for highdpi rendering (crisper sprites on retina screens)
+highdpi=true

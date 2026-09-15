@@ -1,0 +1,7 @@
+#!/bin/sh
+cd "`dirname "$0"`"
+
+cd ..
+cd ..
+cd ..
+exec ./dragonruby samples/14_shaders/02_flow_like_water

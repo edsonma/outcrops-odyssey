@@ -1,0 +1,69 @@
+================
+* INFO: Starting Itch Wizard.
+* INFO: Running step ~:check_metadata~.
+* ERROR: undefined method 'map'
+** Backtrace:
+* WARNING: ~solid~ primitives have been deprecated. Use ~sprite~.
+
+INSTEAD OF:
+
+#+begin_src
+  args.outputs.solids << {
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 128
+  }
+#+end_src
+
+DO
+
+#+begin_src
+  args.outputs.sprites << {
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    path: :solid, # <-- use :solid as the path
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 128
+  }
+#+end_src
+* WARNING: ~solid~ primitives have been deprecated. Use ~sprite~.
+
+INSTEAD OF:
+
+#+begin_src
+  args.outputs.solids << {
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 128
+  }
+#+end_src
+
+DO
+
+#+begin_src
+  args.outputs.sprites << {
+    x: 0,
+    y: 0,
+    w: 100,
+    h: 100,
+    path: :solid, # <-- use :solid as the path
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 128
+  }
+#+end_src
