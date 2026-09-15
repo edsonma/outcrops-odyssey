@@ -44,6 +44,10 @@ class Game
   PLAYER_SPEED = 4.2
   BREAK_RANGE = 60
   DAY_LENGTH_TICKS = 5400 # ~90 seconds at 60fps for a full day/night cycle in this demo
+  CARDS_PER_PAGE = 8
+  PANEL = { x: 190, y: 60, w: 900, h: 600 }.freeze
+  CARD_ADJECTIVES = %w[Ancient Weathered Crystalline Rugged Sunlit Deep
+                        Mossy Jagged Polished Faded Banded Coarse].freeze
 
   def tick
     defaults
@@ -62,6 +66,11 @@ class Game
     state.inventory_count ||= 0
     state.popups ||= []          # floating "+N" / card-found feedback, an
                                   # Array of Hashes -- safe in args.state
+    state.cards ||= []           # collected outcrop "cards", Array of Hashes
+    state.ui_mode ||= :none      # :none / :map / :cards -- which full-screen
+                                  # overlay (if any) is currently open
+    state.card_page ||= 0
+    state.move_target_active ||= false
     state.tick_count ||= 0
 
     # The chunk cache and visited-set use dynamic string keys ("cx,cy",
@@ -78,6 +87,28 @@ class Game
   # INPUT
   # ---------------------------------------------------------------
   def input
+    # M and C toggle their overlays open/closed from anywhere, and
+    # closing one never leaves you stuck -- pressing the same key again
+    # (rather than needing a separate "close" button) closes it.
+    if inputs.keyboard.key_down.m
+      state.ui_mode = (state.ui_mode == :map) ? :none : :map
+    end
+    if inputs.keyboard.key_down.c
+      state.ui_mode = (state.ui_mode == :cards) ? :none : :cards
+    end
+
+    if state.ui_mode == :cards
+      handle_card_paging
+      return # movement/break/click are suspended while a menu is open
+    end
+    return if state.ui_mode == :map # map has no interaction besides closing
+
+    handle_movement_input
+    handle_mouse_click
+    break_nearest_outcrop if inputs.keyboard.key_down.space
+  end
+
+  def handle_movement_input
     p = state.player
     dx = 0
     dy = 0
@@ -87,13 +118,65 @@ class Game
     dy += 1 if inputs.keyboard.up    || inputs.keyboard.w
 
     if dx != 0 || dy != 0
+      state.move_target_active = false # manual movement always overrides a click-to-move order in progress
       mag = Math.sqrt((dx * dx) + (dy * dy))
       p.x += (dx / mag) * PLAYER_SPEED
       p.y += (dy / mag) * PLAYER_SPEED
       p.facing = dx < 0 ? -1 : 1 if dx != 0
+    elsif state.move_target_active
+      advance_toward_move_target
     end
+  end
 
-    break_nearest_outcrop if inputs.keyboard.key_down.space
+  # Click-to-move: convert the click's SCREEN position into a WORLD
+  # position (screen center is always the player, since the camera
+  # follows them) and walk there over the next several ticks.
+  #
+  # This is stored as flat state.move_target_x/y/active fields rather
+  # than a single nested Hash (state.move_target = {x:, y:}). Testing
+  # surfaced a real risk with the nested-Hash approach: the FIRST time a
+  # state field is assigned, dot-access wrapping kicks in correctly, but
+  # a SECOND reassignment of the same field can bypass that wrapping
+  # (the underlying entity's accessor is already defined by then), so a
+  # plain Hash -- not a dot-accessible one -- can end up stored on the
+  # second and later clicks. Flat scalar fields never have this
+  # ambiguity, so that's what this uses.
+  def handle_mouse_click
+    return unless inputs.mouse.click
+
+    p = state.player
+    cam_x = p.x - SCREEN_W / 2
+    cam_y = p.y - SCREEN_H / 2
+    state.move_target_x = inputs.mouse.x + cam_x
+    state.move_target_y = inputs.mouse.y + cam_y
+    state.move_target_active = true
+  end
+
+  def advance_toward_move_target
+    p = state.player
+    tx = state.move_target_x - p.x
+    ty = state.move_target_y - p.y
+    dist = Math.sqrt((tx * tx) + (ty * ty))
+
+    if dist < PLAYER_SPEED
+      p.x = state.move_target_x
+      p.y = state.move_target_y
+      state.move_target_active = false
+    else
+      p.x += (tx / dist) * PLAYER_SPEED
+      p.y += (ty / dist) * PLAYER_SPEED
+      p.facing = tx < 0 ? -1 : 1
+    end
+  end
+
+  def handle_card_paging
+    total_pages = [(state.cards.length.to_f / CARDS_PER_PAGE).ceil, 1].max
+    if inputs.keyboard.key_down.down || inputs.keyboard.key_down.s
+      state.card_page = (state.card_page + 1) % total_pages
+    end
+    if inputs.keyboard.key_down.up || inputs.keyboard.key_down.w
+      state.card_page = (state.card_page - 1) % total_pages
+    end
   end
 
   # ---------------------------------------------------------------
@@ -256,21 +339,36 @@ class Game
 
     state.outcrop_points += 10 # card point value (placeholder scoring)
     state.xp += 20
-    spawn_popup(o[:x], o[:y] + 20, "#{o[:lithology]} card! +10 pts / +20 xp", 255, 255, 255)
 
     # GDD-specified flat 5% independent drop chance per category
-    if Numeric.rand(100) < 5
-      state.xp += 10
-      spawn_popup(o[:x], o[:y] + 46, 'Rare mineral found! +10 xp', 240, 210, 90)
-    end
-    if Numeric.rand(100) < 5
-      state.xp += 10
-      spawn_popup(o[:x], o[:y] + 72, 'Fossil found! +10 xp', 190, 220, 255)
-    end
-    if Numeric.rand(100) < 5 && state.inventory_count < 10
-      state.inventory_count += 1
-      spawn_popup(o[:x], o[:y] + 98, 'Bonus rock collected', 200, 255, 200)
-    end
+    mineral = Numeric.rand(100) < 5
+    fossil = Numeric.rand(100) < 5
+    bonus_rock = Numeric.rand(100) < 5 && state.inventory_count < 10
+
+    state.xp += 10 if mineral
+    state.xp += 10 if fossil
+    state.inventory_count += 1 if bonus_rock
+
+    card_name = generate_card_name(o)
+    state.cards << {
+      id: o[:id], name: card_name, lithology: o[:lithology],
+      mineral: mineral, fossil: fossil, bonus_rock: bonus_rock
+    }
+
+    spawn_popup(o[:x], o[:y] + 20, "#{card_name}! +10 pts / +20 xp", 255, 255, 255)
+    spawn_popup(o[:x], o[:y] + 46, 'Rare mineral found! +10 xp', 240, 210, 90) if mineral
+    spawn_popup(o[:x], o[:y] + 72, 'Fossil found! +10 xp', 190, 220, 255) if fossil
+    spawn_popup(o[:x], o[:y] + 98, 'Bonus rock collected', 200, 255, 200) if bonus_rock
+  end
+
+  # A short, deterministic "card name" from the outcrop's id -- plain
+  # character-code summation kept small with a mod every step (same
+  # overflow-safety discipline as chunk_hash above), not a cryptographic
+  # hash, just enough to pick a stable adjective per outcrop.
+  def generate_card_name(o)
+    seed = o[:id].each_char.reduce(7) { |acc, ch| ((acc * 31) + ch.ord) % 100_000 }
+    adjective = CARD_ADJECTIVES[seed % CARD_ADJECTIVES.length]
+    "#{adjective} #{o[:lithology]}"
   end
 
   def spawn_popup(x, y, text, r, g, b)
@@ -294,10 +392,16 @@ class Game
   def render
     outputs.background_color = [20, 26, 18]
     render_world
+    render_move_target_marker
     render_player
     render_popups
     render_night_overlay
     render_ui
+
+    case state.ui_mode
+    when :map then render_map_overlay
+    when :cards then render_cards_overlay
+    end
   end
 
   def render_world
@@ -386,6 +490,126 @@ class Game
     outputs.solids << { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, r: 15, g: 20, b: 55, a: (n * 165).to_i }
   end
 
+  # small pulsing ring showing where a click-to-move order is heading
+  def render_move_target_marker
+    return unless state.move_target_active
+
+    p = state.player
+    cam_x = p.x - SCREEN_W / 2
+    cam_y = p.y - SCREEN_H / 2
+    mx = state.move_target_x - cam_x
+    my = state.move_target_y - cam_y
+    pulse = 6 + (Math.sin(state.tick_count / 8.0) * 2)
+    outputs.borders << { x: mx - pulse, y: my - pulse, w: pulse * 2, h: pulse * 2, r: 255, g: 255, b: 255, a: 180 }
+  end
+
+  # ---------------- MINI-MAP -----------------------------------
+  # Shows every chunk generated so far (i.e. every chunk the player has
+  # been within VIEW_RADIUS_CHUNKS of at some point), each outcrop as a
+  # dot (green = visited, yellow = raw/unbroken), and the player's
+  # current position -- scaled to fit a fixed panel regardless of how
+  # far the world has expanded.
+  def render_map_overlay
+    outputs.solids << { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, r: 10, g: 12, b: 10, a: 210 }
+    outputs.solids << { x: PANEL[:x], y: PANEL[:y], w: PANEL[:w], h: PANEL[:h], r: 30, g: 26, b: 20, a: 235 }
+    outputs.borders << { x: PANEL[:x], y: PANEL[:y], w: PANEL[:w], h: PANEL[:h], r: 200, g: 180, b: 130, a: 255 }
+    outputs.labels << {
+      x: PANEL[:x] + PANEL[:w] / 2, y: PANEL[:y] + PANEL[:h] + 34, text: 'MAP',
+      size_enum: 4, alignment_enum: 1, r: 255, g: 255, b: 255, a: 230
+    }
+
+    keys = $chunks.keys
+    unless keys.empty?
+      chunk_coords = keys.map { |k| k.split(',').map(&:to_i) }
+      min_cx = chunk_coords.map { |c| c[0] }.min
+      max_cx = chunk_coords.map { |c| c[0] }.max
+      min_cy = chunk_coords.map { |c| c[1] }.min
+      max_cy = chunk_coords.map { |c| c[1] }.max
+
+      world_min_x = min_cx * CHUNK
+      world_min_y = min_cy * CHUNK
+      world_w = [((max_cx + 1) * CHUNK) - world_min_x, 1].max.to_f
+      world_h = [((max_cy + 1) * CHUNK) - world_min_y, 1].max.to_f
+
+      margin = 30
+      avail_w = PANEL[:w] - (margin * 2)
+      avail_h = PANEL[:h] - (margin * 2)
+      scale = [avail_w / world_w, avail_h / world_h].min
+
+      $chunks.each_value do |chunk|
+        chunk[:outcrops].each do |o|
+          mx = PANEL[:x] + margin + ((o[:x] - world_min_x) * scale)
+          my = PANEL[:y] + margin + ((o[:y] - world_min_y) * scale)
+          if $visited[o[:id]]
+            outputs.solids << { x: mx - 3, y: my - 3, w: 6, h: 6, r: 120, g: 210, b: 120, a: 255 }
+          else
+            outputs.solids << { x: mx - 3, y: my - 3, w: 6, h: 6, r: 220, g: 210, b: 90, a: 255 }
+          end
+        end
+      end
+
+      p = state.player
+      px = PANEL[:x] + margin + ((p.x - world_min_x) * scale)
+      py = PANEL[:y] + margin + ((p.y - world_min_y) * scale)
+      outputs.solids << { x: px - 5, y: py - 5, w: 10, h: 10, r: 235, g: 60, b: 60, a: 255 }
+    end
+
+    outputs.labels << {
+      x: PANEL[:x] + PANEL[:w] / 2, y: PANEL[:y] - 14, text: 'Yellow = raw   Green = visited   Red = you   .   Press M to close',
+      size_enum: -1, alignment_enum: 1, r: 220, g: 220, b: 220, a: 200
+    }
+  end
+
+  # ---------------- CARD COLLECTION VIEWER -----------------------
+  def render_cards_overlay
+    outputs.solids << { x: 0, y: 0, w: SCREEN_W, h: SCREEN_H, r: 10, g: 12, b: 10, a: 210 }
+    outputs.solids << { x: PANEL[:x], y: PANEL[:y], w: PANEL[:w], h: PANEL[:h], r: 30, g: 26, b: 20, a: 235 }
+    outputs.borders << { x: PANEL[:x], y: PANEL[:y], w: PANEL[:w], h: PANEL[:h], r: 200, g: 180, b: 130, a: 255 }
+    outputs.labels << {
+      x: PANEL[:x] + PANEL[:w] / 2, y: PANEL[:y] + PANEL[:h] + 34,
+      text: "CARDS (#{state.cards.length} collected)",
+      size_enum: 4, alignment_enum: 1, r: 255, g: 255, b: 255, a: 230
+    }
+
+    total_pages = [(state.cards.length.to_f / CARDS_PER_PAGE).ceil, 1].max
+    page_start = state.card_page * CARDS_PER_PAGE
+    page_cards = state.cards[page_start, CARDS_PER_PAGE] || []
+
+    if page_cards.empty?
+      outputs.labels << {
+        x: PANEL[:x] + PANEL[:w] / 2, y: PANEL[:y] + PANEL[:h] / 2, text: 'No cards yet -- go break some outcrops!',
+        size_enum: 1, alignment_enum: 1, r: 210, g: 205, b: 190, a: 220
+      }
+    end
+
+    row_y = PANEL[:y] + PANEL[:h] - 60
+    page_cards.each_with_index do |c, i|
+      badges = []
+      badges << 'MINERAL' if c[:mineral]
+      badges << 'FOSSIL' if c[:fossil]
+      badges << 'ROCK' if c[:bonus_rock]
+      badge_text = badges.empty? ? '' : "  [#{badges.join(', ')}]"
+
+      outputs.solids << { x: PANEL[:x] + 24, y: row_y - 8, w: PANEL[:w] - 48, h: 40,
+                           r: 40, g: 35, b: 27, a: (i.even? ? 130 : 60) }
+      outputs.labels << {
+        x: PANEL[:x] + 40, y: row_y + 18, text: "#{page_start + i + 1}. #{c[:name]}",
+        size_enum: 1, r: 240, g: 235, b: 218, a: 235
+      }
+      outputs.labels << {
+        x: PANEL[:x] + 40, y: row_y - 2, text: "#{c[:lithology]}#{badge_text}",
+        size_enum: -1, r: 190, g: 195, b: 175, a: 210
+      }
+      row_y -= 58
+    end
+
+    outputs.labels << {
+      x: PANEL[:x] + PANEL[:w] / 2, y: PANEL[:y] - 14,
+      text: "Page #{state.card_page + 1}/#{total_pages}   .   Up/Down to page   .   Press C to close",
+      size_enum: -1, alignment_enum: 1, r: 220, g: 220, b: 220, a: 200
+    }
+  end
+
   def render_ui
     outputs.labels << {
       x: 24, y: SCREEN_H - 18, text: "Outcrop Points: #{state.outcrop_points}",
@@ -400,7 +624,7 @@ class Game
       size_enum: -1, r: 200, g: 200, b: 220, a: 200
     }
     outputs.labels << {
-      x: 24, y: 40, text: 'WASD/Arrows to walk  .  SPACE to break an outcrop',
+      x: 24, y: 40, text: 'WASD/Arrows/Click to move  .  SPACE break  .  M map  .  C cards',
       size_enum: -1, r: 220, g: 220, b: 220, a: 180
     }
   end

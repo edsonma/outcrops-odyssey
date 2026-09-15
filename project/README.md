@@ -1,5 +1,41 @@
 # Outcrops Odyssey — "Geology Field" Tech Demo (DragonRuby)
 
+## New: mini-map, card collection viewer, click-to-move
+
+- **Mini-map (M)**: shows every chunk generated so far, scaled to fit a
+  fixed panel regardless of how far you've explored. Yellow dots are
+  raw/unbroken outcrops, green dots are visited ones, and the red dot is
+  you. Press M again to close.
+- **Card collection viewer (C)**: lists every card you've collected, with
+  its (procedurally-named) title, lithology, and any mineral/fossil/bonus
+  rock found on it. Up/Down pages through the list 8 at a time and wraps
+  around. Press C again to close.
+- **Click-to-move**: click anywhere on the ground to walk there — the
+  screen click position is converted into a world position (the camera is
+  always centered on the player, so this is just an offset from screen
+  center) and the player walks toward it until it arrives or you press a
+  movement key, which immediately cancels the click order in favor of
+  direct control.
+- Movement, clicking, and breaking outcrops are all suspended while
+  either overlay is open, so you can't accidentally walk into something
+  or waste a break while browsing a menu.
+
+**A DragonRuby state risk this surfaced**: the click-to-move target was
+originally stored as a single nested Hash (`state.move_target = {x:, y:}`)
+the same way `state.player` and `state.boat` are. Testing caught a real
+problem with that: a state field's dot-access wrapping is applied when
+it's *first* assigned, but a Hash assigned to that *same* field again
+later can bypass the wrapping (the field's accessor method already
+exists by then), silently leaving a plain, non-dot-accessible Hash in
+its place. Since `move_target` gets reassigned on every single click —
+unlike `player`/`boat`, which are only ever set once via `||=` — this
+was a real, reachable bug, not a hypothetical one. The fix: flat scalar
+fields (`state.move_target_x`, `state.move_target_y`,
+`state.move_target_active`) instead of one nested Hash. Flat fields never
+have this ambiguity, which is also why `state.outcrop_points`,
+`state.xp`, etc. were never at risk. If you add your own repeatedly-reset
+piece of state, prefer flat fields over a nested Hash for this reason.
+
 ## Player character redesign
 
 The player sprite (`player.png` / `player_shadow.png`) was redrawn in a
@@ -134,8 +170,11 @@ fine locally."
 ## Controls
 
 - **WASD / Arrow keys** — walk
+- **Left click** — walk to that point on the ground
 - **SPACE** — break the nearest outcrop (only works within range; a
   prompt appears when one's close enough)
+- **M** — open/close the mini-map
+- **C** — open/close your card collection (Up/Down to page)
 
 ## Running it
 
