@@ -1,0 +1,8 @@
+{
+  "name": "outcrops-odyssey-web",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Static host for the Outcrops Odyssey DragonRuby HTML5 build",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}

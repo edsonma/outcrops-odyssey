@@ -221,3 +221,20 @@ engine can confirm those.
 - Real collision so trees are obstacles instead of decoration
 - The full card UI (the "Pokémon card" collection screen) triggered from
   breaking an outcrop, instead of a text popup
+
+
+## Play in the browser / deploy to Railway
+
+The game is exported as a DragonRuby HTML5 build and served by `server.js`
+(zero-dependency Node static server that sets the COOP/COEP headers
+DragonRuby's web runtime needs).
+
+1. On your Mac, from the repo root:
+   `scripts/build-web.fish` — packages the game and unzips it into `web/`.
+   (HTML5 export needs a DragonRuby license that includes it.)
+2. `git add web && git commit -m "web build" && git push`
+3. On Railway: New Project → Deploy from GitHub repo → pick this repo.
+   `railway.json` selects the `Dockerfile`; health check is `/healthz`.
+   Then Settings → Networking → Generate Domain.
+
+Local test: `node server.js` then open http://localhost:3000
