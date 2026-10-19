@@ -14,6 +14,7 @@ const PANEL: (f32, f32, f32, f32) = (190.0, 60.0, 900.0, 600.0); // x, y(bottom)
 // Provided by web-template/index.html (a miniquad plugin); true on phones/tablets.
 // If the JS side is missing, gl.js stubs the import and it simply returns 0.
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
 extern "C" {
     fn oo_is_touch_device() -> i32;
 }
