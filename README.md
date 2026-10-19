@@ -236,7 +236,14 @@ assets/        sprites + fonts (DejaVu, free license)
 web-template/  index.html + miniquad's gl.js loader for the browser build
 ```
 
-Controls: WASD/arrows or click to move, SPACE break outcrop, M map, C cards.
+Controls: WASD/arrows or click to move, SPACE break outcrop, **E** interact (board / call the truck), M map, C cards, ENTER restart after game over.
+
+### The daily loop (v0.3)
+1. Wake at the **basecamp**; walk to the truck parked on the road below camp and press **E**.
+2. The truck drives along the **main roads** (a world-wide grid) to today's randomly chosen drop point.
+3. Explore the infinite field and break outcrops. Field time runs **05:00 -> 18:00**; supplies arrive at **12:00** (+50 energy). Energy drains as you walk (at 0 you move at half speed).
+4. Stand on a main road and press **E** to call the truck, or be on a road at sunset (auto-pickup). **Miss the road at 18:00 and it's game over.**
+5. The truck drives back to camp, you sleep (energy restored), and the next day begins. Cards, points and visited outcrops carry over.
 
 ### Run natively
 `cargo run --release`
