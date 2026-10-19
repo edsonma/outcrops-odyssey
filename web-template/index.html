@@ -2,26 +2,56 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
   <title>Outcrops Odyssey</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-    canvas { display: block; width: 100%; height: 100%; outline: none; }
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+      overscroll-behavior: none; touch-action: none; -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
     #loading { position: fixed; inset: 0; display: grid; place-items: center;
       color: #d8cfae; font: 20px/1.4 system-ui, sans-serif; pointer-events: none; }
+    #fs { position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left));
+      width: 40px; height: 40px; border-radius: 8px; border: 1px solid rgba(255,255,255,.35);
+      background: rgba(0,0,0,.45); color: #fff; font: 20px/1 system-ui, sans-serif; z-index: 5; display: none; }
   </style>
 </head>
 <body>
   <canvas id="glcanvas" tabindex="1"></canvas>
   <div id="loading">Loading Outcrops Odyssey…</div>
+  <button id="fs" aria-label="Fullscreen" title="Fullscreen">⛶</button>
   <script src="gl.js"></script>
   <script>
     load("outcrops_odyssey.wasm");
-    // hide the loading text once the first frame has been drawn
+
+    // hide the loading text once the engine is up
     const t = setInterval(() => {
-      const c = document.getElementById("glcanvas");
-      if (c && c.width > 0 && window.wasm_exports) { document.getElementById("loading").remove(); clearInterval(t); }
+      if (window.wasm_exports) { document.getElementById("loading")?.remove(); clearInterval(t); }
     }, 300);
+
+    // block pinch-zoom / double-tap zoom / long-press menus on touch devices
+    for (const ev of ["gesturestart", "gesturechange", "gestureend", "contextmenu"])
+      document.addEventListener(ev, e => e.preventDefault());
+    let lastTouchEnd = 0;
+    document.addEventListener("touchend", e => {
+      const now = Date.now(); if (now - lastTouchEnd < 300) e.preventDefault(); lastTouchEnd = now;
+    }, { passive: false });
+
+    // fullscreen + landscape lock where the browser allows it (not iPhone Safari)
+    const fs = document.getElementById("fs");
+    const canFs = document.documentElement.requestFullscreen && !document.fullscreenElement;
+    if (canFs && matchMedia("(pointer: coarse)").matches) fs.style.display = "block";
+    fs.addEventListener("click", async () => {
+      try {
+        await document.documentElement.requestFullscreen();
+        if (screen.orientation && screen.orientation.lock) await screen.orientation.lock("landscape").catch(() => {});
+      } catch (e) {}
+    });
+    document.addEventListener("fullscreenchange", () => { fs.style.display = document.fullscreenElement ? "none" : fs.style.display; });
   </script>
 </body>
 </html>

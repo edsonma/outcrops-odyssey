@@ -1,9 +1,11 @@
 mod game;
+mod touch;
 mod world;
 
 use game::*;
 use macroquad::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use touch::{Tap, TouchState};
 use world::*;
 
 const TICK: f32 = 1.0 / 60.0;
@@ -15,6 +17,7 @@ fn window_conf() -> Conf {
         window_width: SCREEN_W as i32,
         window_height: SCREEN_H as i32,
         window_resizable: true,
+        high_dpi: true,
         ..Default::default()
     }
 }
@@ -75,7 +78,7 @@ fn label(a: &Assets, text: &str, x: f32, y: f32, size_enum: i32, center: bool, c
     draw_text_ex(text, x, SCREEN_H - y + size as f32 * 0.85, TextParams { font: Some(font), font_size: size, color: c, ..Default::default() });
 }
 
-fn render(g: &Game, a: &Assets) {
+fn render(g: &Game, a: &Assets, touch: bool) {
     clear_background(col(20, 26, 18, 255));
     render_world(g, a);
     render_truck(g);
@@ -83,7 +86,7 @@ fn render(g: &Game, a: &Assets) {
     render_move_target_marker(g);
     render_popups(g, a);
     render_night_overlay(g);
-    render_ui(g, a);
+    render_ui(g, a, touch);
     match g.ui_mode {
         UiMode::Map => render_map_overlay(g, a),
         UiMode::Cards => render_cards_overlay(g, a),
@@ -378,7 +381,7 @@ fn render_cards_overlay(g: &Game, a: &Assets) {
         px + pw / 2.0, py - 14.0, -1, true, col(220, 220, 220, 200), false);
 }
 
-fn render_ui(g: &Game, a: &Assets) {
+fn render_ui(g: &Game, a: &Assets, touch: bool) {
     label(a, &format!("Outcrop Points: {}", g.outcrop_points), 24.0, SCREEN_H - 18.0, 2, false, col(255, 255, 255, 230), true);
     label(a, &format!("XP: {}   Inventory: {}/{}", g.xp, g.inventory_count, INVENTORY_CAP), 24.0, SCREEN_H - 42.0, 0, false, col(230, 230, 230, 220), false);
 
@@ -398,10 +401,10 @@ fn render_ui(g: &Game, a: &Assets) {
     // contextual hints
     let mut hint: Option<(String, Color)> = None;
     match g.phase {
-        Phase::Basecamp if g.near_truck() => hint = Some(("Press E to board the truck".into(), col(255, 255, 255, 235))),
+        Phase::Basecamp if g.near_truck() => hint = Some((if touch { "Tap BOARD to climb in" } else { "Press E to board the truck" }.into(), col(255, 255, 255, 235))),
         Phase::Basecamp => hint = Some(("Walk to the truck on the road below camp".into(), col(230, 230, 210, 210))),
-        Phase::Exploring if g.player_on_road() => hint = Some(("Press E to call the truck back to basecamp".into(), col(190, 240, 190, 240))),
-        Phase::Exploring if g.nearest_outcrop().is_some() => hint = Some(("SPACE to break outcrop".into(), col(255, 255, 255, 220))),
+        Phase::Exploring if g.player_on_road() => hint = Some((if touch { "Tap TRUCK to call the truck back to basecamp" } else { "Press E to call the truck back to basecamp" }.into(), col(190, 240, 190, 240))),
+        Phase::Exploring if g.nearest_outcrop().is_some() => hint = Some((if touch { "Tap BREAK to break the outcrop" } else { "SPACE to break outcrop" }.into(), col(255, 255, 255, 220))),
         _ => {}
     }
     if let Some((text, c)) = hint {
@@ -423,7 +426,34 @@ fn render_ui(g: &Game, a: &Assets) {
         label(a, text, SCREEN_W / 2.0, SCREEN_H - 112.0, 2, true, col(255, 255, 255, alpha), true);
     }
 
-    label(a, "WASD/Arrows/Click move  .  SPACE break  .  E interact  .  M map  .  C cards", 24.0, 40.0, -1, false, col(220, 220, 220, 180), false);
+    if !touch {
+        label(a, "WASD/Arrows/Click move  .  SPACE break  .  E interact  .  M map  .  C cards", 24.0, 40.0, -1, false, col(220, 220, 220, 180), false);
+    }
+}
+
+fn render_touch_ui(g: &Game, a: &Assets, t: &TouchState) {
+    if !t.active {
+        return;
+    }
+    for b in touch::buttons(g) {
+        let (fill, line) = if b.hot { (col(255, 235, 150, 120), col(255, 245, 190, 235)) } else { (col(20, 20, 20, 110), col(255, 255, 255, 120)) };
+        solid(b.x, b.y, b.w, b.h, fill);
+        border(b.x, b.y, b.w, b.h, line);
+        let size = if b.label.chars().count() > 5 { 0 } else { 1 };
+        label(a, &b.label, b.x + b.w / 2.0, b.y + b.h / 2.0 + 10.0, size, true, col(255, 255, 255, 245), true);
+    }
+    // virtual stick: faint hint ring when idle, base + knob while held
+    if g.ui_mode == UiMode::None && g.player_visible() {
+        let (bx, by, kx, ky, alpha) = match t.stick {
+            Some(s) => {
+                let (kx, ky) = s.knob();
+                (s.base.0, s.base.1, kx, ky, 150u8)
+            }
+            None => (150.0, 150.0, 150.0, 150.0, 55u8),
+        };
+        draw_circle_lines(bx, SCREEN_H - by, 90.0, 3.0, col(255, 255, 255, alpha));
+        draw_circle(kx, SCREEN_H - ky, 34.0, col(255, 255, 255, alpha));
+    }
 }
 
 /// A small arrow near the player pointing at the closest main road.
@@ -569,6 +599,13 @@ async fn main() {
     let mut pending = Input::default(); // edge-triggered input collected between ticks
     let mut acc = 0.0f32;
     let mut frame = 0u32;
+    let mut touch_state = TouchState::default();
+    let mut known_touches: HashSet<u64> = HashSet::new();
+    simulate_mouse_with_touch(false);
+    #[cfg(debug_assertions)]
+    if std::env::var("OO_TOUCH").is_ok() {
+        touch_state.active = true;
+    }
 
     loop {
         // --- gather input (edges are latched until a tick consumes them) ---
@@ -580,11 +617,52 @@ async fn main() {
         pending.restart_pressed |= is_key_pressed(KeyCode::Enter);
         pending.page_down_pressed |= is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S);
         pending.page_up_pressed |= is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W);
+        let to_virtual = |px: f32, py: f32| ((px - off_x) / scale, SCREEN_H - (py - off_y) / scale);
+        let on_screen = |vx: f32, vy: f32| (0.0..=SCREEN_W).contains(&vx) && (0.0..=SCREEN_H).contains(&vy);
+        let route = |tap: Tap, pending: &mut Input, ui: UiMode| match tap {
+            Tap::Button(id) => touch::apply(id, pending, ui),
+            Tap::World(x, y) => pending.click = Some((x, y)),
+            Tap::StickStarted => {}
+        };
+
         if is_mouse_button_pressed(MouseButton::Left) {
             let (mx, my) = mouse_position();
-            let (vx, vy) = ((mx - off_x) / scale, (my - off_y) / scale);
-            if (0.0..=SCREEN_W).contains(&vx) && (0.0..=SCREEN_H).contains(&vy) {
-                pending.click = Some((vx, SCREEN_H - vy));
+            let (vx, vy) = to_virtual(mx, my);
+            if on_screen(vx, vy) {
+                // mouse clicks may press on-screen buttons once they are visible, else walk
+                let bs = touch::buttons(&game);
+                match (touch_state.active, touch::hit(&bs, vx, vy)) {
+                    (true, Some(id)) => touch::apply(id, &mut pending, game.ui_mode),
+                    _ => pending.click = Some((vx, vy)),
+                }
+            }
+        }
+
+        // touches: positions are physical pixels, so divide by the DPI scale first
+        let dpi = screen_dpi_scale();
+        let mut seen_now = HashSet::new();
+        for t in touches() {
+            let (vx, vy) = to_virtual(t.position.x / dpi, t.position.y / dpi);
+            seen_now.insert(t.id);
+            match t.phase {
+                TouchPhase::Started if !known_touches.contains(&t.id) => {
+                    known_touches.insert(t.id);
+                    let tap = touch_state.down(t.id, vx, vy, &game);
+                    route(tap, &mut pending, game.ui_mode);
+                }
+                TouchPhase::Moved | TouchPhase::Stationary => touch_state.moved(t.id, vx, vy),
+                TouchPhase::Ended | TouchPhase::Cancelled => {
+                    touch_state.up(t.id);
+                    known_touches.remove(&t.id);
+                }
+                _ => {}
+            }
+        }
+        // a touch that vanished without an Ended event must not leave the stick stuck
+        known_touches.retain(|id| seen_now.contains(id));
+        if let Some(st) = touch_state.stick {
+            if !known_touches.contains(&st.id) {
+                touch_state.up(st.id);
             }
         }
 
@@ -599,6 +677,11 @@ async fn main() {
             input.right = is_key_down(KeyCode::Right) || is_key_down(KeyCode::D);
             input.up = is_key_down(KeyCode::Up) || is_key_down(KeyCode::W);
             input.down = is_key_down(KeyCode::Down) || is_key_down(KeyCode::S);
+            let (sl, sr, su, sd) = touch_state.dirs();
+            input.left |= sl;
+            input.right |= sr;
+            input.up |= su;
+            input.down |= sd;
             game.tick(&input);
             pending = Input::default();
             acc -= TICK;
@@ -608,7 +691,8 @@ async fn main() {
         let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, SCREEN_W, SCREEN_H));
         cam.render_target = Some(target.clone());
         set_camera(&cam);
-        render(&game, &assets);
+        render(&game, &assets, touch_state.active);
+        render_touch_ui(&game, &assets, &touch_state);
 
         set_default_camera();
         clear_background(BLACK);
@@ -619,6 +703,14 @@ async fn main() {
             WHITE,
             DrawTextureParams { dest_size: Some(vec2(SCREEN_W * scale, SCREEN_H * scale)), flip_y: true, ..Default::default() },
         );
+        if screen_height() > screen_width() * 1.05 {
+            // portrait: the game is landscape-only; nudge the player to rotate
+            let (w, h) = (screen_width(), screen_height());
+            draw_rectangle(0.0, h * 0.5 - 70.0, w, 140.0, Color::from_rgba(0, 0, 0, 200));
+            let msg = "Rotate your device to landscape";
+            let d = measure_text(msg, Some(&assets.font_bold), 28, 1.0);
+            draw_text_ex(msg, (w - d.width) / 2.0, h * 0.5 + 10.0, TextParams { font: Some(&assets.font_bold), font_size: 28, color: WHITE, ..Default::default() });
+        }
         // dev aid: OO_SHOT=/path.png saves a screenshot after OO_SHOT_FRAMES frames and exits
         frame += 1;
         if let Ok(path) = std::env::var("OO_SHOT") {

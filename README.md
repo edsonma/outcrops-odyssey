@@ -238,6 +238,12 @@ web-template/  index.html + miniquad's gl.js loader for the browser build
 
 Controls: WASD/arrows or click to move, SPACE break outcrop, **E** interact (board / call the truck), M map, C cards, ENTER restart after game over.
 
+### Mobile / touch
+Works in a phone browser (landscape): on the first touch the on-screen controls appear — a floating
+**stick** (hold anywhere in the lower-left), **BREAK**, **BOARD / TRUCK**, **MAP**, **CARDS**, and tap
+the world to walk there. The page blocks zoom/scroll, offers a fullscreen button, and asks portrait
+users to rotate. (iPhone Safari has no fullscreen API: use Share -> Add to Home Screen.)
+
 ### The daily loop (v0.3)
 1. Wake at the **basecamp**; walk to the truck parked on the road below camp and press **E**.
 2. The truck drives along the **main roads** (a world-wide grid) to today's randomly chosen drop point.
