@@ -26,6 +26,14 @@
   <button id="fs" aria-label="Fullscreen" title="Fullscreen">⛶</button>
   <script src="gl.js"></script>
   <script>
+    // tell the game whether this is a touch device so the on-screen controls show at once
+    miniquad_add_plugin({
+      register_plugin: function (importObject) {
+        importObject.env.oo_is_touch_device = function () {
+          return matchMedia("(pointer: coarse)").matches || (navigator.maxTouchPoints > 0 && !matchMedia("(pointer: fine)").matches) ? 1 : 0;
+        };
+      }
+    });
     load("outcrops_odyssey.wasm");
 
     // hide the loading text once the engine is up

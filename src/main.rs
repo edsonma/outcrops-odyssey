@@ -11,6 +11,22 @@ use world::*;
 const TICK: f32 = 1.0 / 60.0;
 const PANEL: (f32, f32, f32, f32) = (190.0, 60.0, 900.0, 600.0); // x, y(bottom), w, h
 
+// Provided by web-template/index.html (a miniquad plugin); true on phones/tablets.
+// If the JS side is missing, gl.js stubs the import and it simply returns 0.
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    fn oo_is_touch_device() -> i32;
+}
+
+fn is_touch_device() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        oo_is_touch_device() != 0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    false
+}
+
 fn window_conf() -> Conf {
     Conf {
         window_title: "Outcrops Odyssey".to_owned(),
@@ -602,6 +618,7 @@ async fn main() {
     let mut touch_state = TouchState::default();
     let mut known_touches: HashSet<u64> = HashSet::new();
     simulate_mouse_with_touch(false);
+    touch_state.active = is_touch_device();
     #[cfg(debug_assertions)]
     if std::env::var("OO_TOUCH").is_ok() {
         touch_state.active = true;
