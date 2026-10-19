@@ -417,10 +417,10 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
     // contextual hints
     let mut hint: Option<(String, Color)> = None;
     match g.phase {
-        Phase::Basecamp if g.near_truck() => hint = Some((if touch { "Tap BOARD to climb in" } else { "Press E to board the truck" }.into(), col(255, 255, 255, 235))),
-        Phase::Basecamp => hint = Some(("Walk to the truck on the road below camp".into(), col(230, 230, 210, 210))),
+        Phase::Basecamp if g.near_truck() => hint = Some((if touch { "Tap the truck (or BOARD) to climb in" } else { "Press E to board the truck" }.into(), col(255, 255, 255, 235))),
+        Phase::Basecamp => hint = Some((if touch { "Tap the truck on the road below camp" } else { "Walk to the truck on the road below camp" }.into(), col(230, 230, 210, 210))),
         Phase::Exploring if g.player_on_road() => hint = Some((if touch { "Tap TRUCK to call the truck back to basecamp" } else { "Press E to call the truck back to basecamp" }.into(), col(190, 240, 190, 240))),
-        Phase::Exploring if g.nearest_outcrop().is_some() => hint = Some((if touch { "Tap BREAK to break the outcrop" } else { "SPACE to break outcrop" }.into(), col(255, 255, 255, 220))),
+        Phase::Exploring if g.nearest_outcrop().is_some() => hint = Some((if touch { "Tap the outcrop (or BREAK) to break it" } else { "SPACE to break outcrop" }.into(), col(255, 255, 255, 220))),
         _ => {}
     }
     if let Some((text, c)) = hint {

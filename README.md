@@ -240,8 +240,9 @@ Controls: WASD/arrows or click to move, SPACE break outcrop, **E** interact (boa
 
 ### Mobile / touch
 Works in a phone browser (landscape): on the first touch the on-screen controls appear — a floating
-**stick** (hold anywhere in the lower-left), **BREAK**, **BOARD / TRUCK**, **MAP**, **CARDS**, and tap
-the world to walk there. The page blocks zoom/scroll, offers a fullscreen button, and asks portrait
+**stick** (hold anywhere in the lower-left) plus a Minecraft-style right-hand cluster: big **BREAK**,
+**BOARD / TRUCK**, **MAP**, **CARDS**. You can also **tap things directly**: tap an outcrop to break it
+(you walk over first if it's far), tap the truck to board it, tap bare ground to walk there. The page blocks zoom/scroll, offers a fullscreen button, and asks portrait
 users to rotate. (iPhone Safari has no fullscreen API: use Share -> Add to Home Screen.)
 
 ### The daily loop (v0.3)

@@ -57,9 +57,9 @@ pub fn buttons(g: &Game) -> Vec<Button> {
                     Phase::Exploring => ("TRUCK", g.player_on_road()),
                     _ => ("E", false),
                 };
-                v.push(b(BtnId::Act, 1040.0, 40.0, 110.0, 90.0, act.0, act.1));
+                v.push(b(BtnId::Act, 930.0, 40.0, 130.0, 110.0, act.0, act.1));
                 if g.phase == Phase::Exploring {
-                    v.push(b(BtnId::Break, 1160.0, 40.0, 110.0, 150.0, "BREAK", g.nearest_outcrop().is_some()));
+                    v.push(b(BtnId::Break, 1090.0, 40.0, 170.0, 170.0, "BREAK", g.nearest_outcrop().is_some()));
                 }
             }
         }

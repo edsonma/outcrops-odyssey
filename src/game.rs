@@ -33,6 +33,16 @@ pub const ENERGY_DRAIN_PER_TICK: f32 = 0.008;
 pub const SUPPLY_ENERGY: f32 = 50.0;
 pub const DROP_SIDE_OFFSET: f32 = 140.0;
 
+/// An action queued by tapping something far away: walk there, then do it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Pending {
+    None,
+    Break(String),
+    Board,
+}
+
+pub const TAP_PICK_RADIUS: f32 = 55.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UiMode {
     None,
@@ -150,6 +160,7 @@ pub struct Game {
     pub ui_mode: UiMode,
     pub card_page: usize,
     pub move_target: Option<(f32, f32)>,
+    pub pending: Pending,
     pub tick_count: u32,
     pub chunks: HashMap<(i32, i32), Chunk>,
     pub visited: HashSet<String>,
@@ -179,6 +190,7 @@ impl Game {
             ui_mode: UiMode::None,
             card_page: 0,
             move_target: None,
+            pending: Pending::None,
             tick_count: 0,
             chunks: HashMap::new(),
             visited: HashSet::new(),
@@ -420,14 +432,94 @@ impl Game {
         self.handle_movement(input);
         if let Some((mx, my)) = input.click {
             let (cx, cy) = self.cam();
-            self.move_target = Some((mx + cx, my + cy));
+            self.on_tap(mx + cx, my + cy);
         }
+        self.resolve_pending();
         if input.interact_pressed {
             self.interact();
         }
         if input.space_pressed && self.phase == Phase::Exploring {
             self.break_nearest_outcrop();
         }
+    }
+
+    /// Minecraft-style tap: tapping an outcrop breaks it (walking over first if
+    /// needed), tapping the truck boards it, tapping bare ground walks there.
+    fn on_tap(&mut self, wx: f32, wy: f32) {
+        self.pending = Pending::None;
+        let dist = |ax: f32, ay: f32, bx: f32, by: f32| ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
+
+        if self.phase == Phase::Exploring {
+            if let Some(o) = self.outcrop_at(wx, wy) {
+                if dist(o.x, o.y, self.player.x, self.player.y) <= BREAK_RANGE {
+                    self.break_outcrop(&o);
+                } else {
+                    // stand just in front of it (on the player's side), then break
+                    let (vx, vy) = (self.player.x - o.x, self.player.y - o.y);
+                    let len = (vx * vx + vy * vy).sqrt().max(1.0);
+                    self.move_target = Some((o.x + vx / len * 35.0, o.y + vy / len * 35.0));
+                    self.pending = Pending::Break(o.id);
+                }
+                return;
+            }
+        }
+        if self.phase == Phase::Basecamp && dist(self.truck.x, self.truck.y, wx, wy) <= 100.0 {
+            if self.near_truck() {
+                self.start_truck_out();
+            } else {
+                self.move_target = Some((self.truck.x, self.truck.y + 70.0));
+                self.pending = Pending::Board;
+            }
+            return;
+        }
+        self.move_target = Some((wx, wy));
+    }
+
+    fn resolve_pending(&mut self) {
+        match self.pending.clone() {
+            Pending::None => {}
+            Pending::Break(id) => {
+                let target = self.find_outcrop(&id).cloned();
+                match target {
+                    Some(o) if ((o.x - self.player.x).powi(2) + (o.y - self.player.y).powi(2)).sqrt() <= BREAK_RANGE => {
+                        self.pending = Pending::None;
+                        self.break_outcrop(&o);
+                    }
+                    _ if self.move_target.is_none() => self.pending = Pending::None, // arrived/cancelled without reaching it
+                    _ => {}
+                }
+            }
+            Pending::Board => {
+                if self.near_truck() {
+                    self.pending = Pending::None;
+                    self.start_truck_out();
+                } else if self.move_target.is_none() {
+                    self.pending = Pending::None;
+                }
+            }
+        }
+    }
+
+    fn outcrop_at(&self, wx: f32, wy: f32) -> Option<Outcrop> {
+        let (cx, cy) = world_to_chunk(wx, wy);
+        let mut best: Option<(Outcrop, f32)> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(chunk) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    for o in &chunk.outcrops {
+                        let d = ((o.x - wx).powi(2) + (o.y - wy).powi(2)).sqrt();
+                        if d <= TAP_PICK_RADIUS && best.as_ref().map_or(true, |(_, bd)| d < *bd) {
+                            best = Some((o.clone(), d));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(o, _)| o)
+    }
+
+    fn find_outcrop(&self, id: &str) -> Option<&Outcrop> {
+        self.chunks.values().flat_map(|c| c.outcrops.iter()).find(|o| o.id == id)
     }
 
     fn interact(&mut self) {
@@ -452,6 +544,7 @@ impl Game {
         let dy = input.up as i32 - input.down as i32;
         if dx != 0 || dy != 0 {
             self.move_target = None; // manual movement cancels click-to-move
+            self.pending = Pending::None;
             let mag = ((dx * dx + dy * dy) as f32).sqrt();
             self.player.x += dx as f32 / mag * speed;
             self.player.y += dy as f32 / mag * speed;
@@ -513,7 +606,11 @@ impl Game {
 
     pub fn break_nearest_outcrop(&mut self) {
         let Some(o) = self.nearest_outcrop().cloned() else { return };
+        self.break_outcrop(&o);
+    }
 
+    pub fn break_outcrop(&mut self, o: &Outcrop) {
+        let o = o.clone();
         if !self.visited.insert(o.id.clone()) {
             self.spawn_popup(o.x, o.y, "Already surveyed", (130, 130, 130));
             return;
@@ -859,5 +956,85 @@ mod tests {
         assert!(dawn > 0.5 && g.night_amount() == 0.0);
         g.clock_ticks = (SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE - 1;
         assert!(g.night_amount() > 0.5);
+    }
+
+    fn outcrop_screen_click(g: &Game, o: &Outcrop) -> (f32, f32) {
+        let (cx, cy) = g.cam();
+        (o.x - cx, o.y - cy)
+    }
+
+    #[test]
+    fn tapping_a_nearby_outcrop_breaks_it_without_moving() {
+        let mut g = Game::new(7);
+        let o = walk_to_first_outcrop(&mut g);
+        g.player.x = o.x + 20.0;
+        let click = outcrop_screen_click(&g, &o);
+        let x0 = g.player.x;
+        g.tick(&Input { click: Some(click), ..idle() });
+        assert_eq!(g.cards.len(), 1);
+        assert_eq!(g.player.x, x0);
+        assert!(g.move_target.is_none());
+    }
+
+    #[test]
+    fn tapping_a_far_outcrop_walks_there_then_breaks() {
+        let mut g = Game::new(7);
+        let o = walk_to_first_outcrop(&mut g);
+        g.player.x = o.x - 300.0;
+        g.player.y = o.y;
+        g.ensure_nearby_chunks_generated();
+        let click = outcrop_screen_click(&g, &o);
+        g.tick(&Input { click: Some(click), ..idle() });
+        assert_eq!(g.pending, Pending::Break(o.id.clone()));
+        assert_eq!(g.cards.len(), 0);
+        for _ in 0..120 {
+            g.tick(&idle());
+        }
+        assert_eq!(g.cards.len(), 1);
+        assert_eq!(g.pending, Pending::None);
+    }
+
+    #[test]
+    fn manual_movement_cancels_a_queued_break() {
+        let mut g = Game::new(7);
+        let o = walk_to_first_outcrop(&mut g);
+        g.player.x = o.x - 300.0;
+        g.player.y = o.y;
+        g.ensure_nearby_chunks_generated();
+        let click = outcrop_screen_click(&g, &o);
+        g.tick(&Input { click: Some(click), ..idle() });
+        g.tick(&Input { down: true, ..idle() });
+        assert_eq!(g.pending, Pending::None);
+        for _ in 0..200 {
+            g.tick(&idle());
+        }
+        assert_eq!(g.cards.len(), 0);
+    }
+
+    #[test]
+    fn tapping_the_truck_walks_over_and_boards() {
+        let mut g = Game::new(11);
+        let (cx, cy) = g.cam();
+        g.tick(&Input { click: Some((g.truck.x - cx, g.truck.y - cy)), ..idle() });
+        assert_eq!(g.pending, Pending::Board);
+        for _ in 0..120 {
+            g.tick(&idle());
+            if g.phase == Phase::TruckOut {
+                break;
+            }
+        }
+        assert_eq!(g.phase, Phase::TruckOut);
+        assert_eq!(g.pending, Pending::None);
+    }
+
+    #[test]
+    fn tapping_bare_ground_still_just_walks() {
+        let mut g = Game::new(1);
+        exploring_at(&mut g, 700.0, 700.0);
+        // a spot with no outcrop within pick radius
+        g.chunks.values_mut().for_each(|c| c.outcrops.clear());
+        g.tick(&Input { click: Some((SCREEN_W / 2.0 + 120.0, SCREEN_H / 2.0)), ..idle() });
+        assert_eq!(g.pending, Pending::None);
+        assert!(g.move_target.is_some());
     }
 }
