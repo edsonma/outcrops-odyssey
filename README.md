@@ -223,18 +223,33 @@ engine can confirm those.
   breaking an outcrop, instead of a text popup
 
 
-## Play in the browser / deploy to Railway
+## Rust port (v0.3) — current game
 
-The game is exported as a DragonRuby HTML5 build and served by `server.js`
-(zero-dependency Node static server that sets the COOP/COEP headers
-DragonRuby's web runtime needs).
+The game now lives in Rust ([Macroquad](https://macroquad.rs)); the DragonRuby
+prototype is kept in `project/mygame` for reference only.
 
-1. On your Mac, from the repo root:
-   `scripts/build-web.fish` — packages the game and unzips it into `web/`.
-   (HTML5 export needs a DragonRuby license that includes it.)
-2. `git add web && git commit -m "web build" && git push`
-3. On Railway: New Project → Deploy from GitHub repo → pick this repo.
-   `railway.json` selects the `Dockerfile`; health check is `/healthz`.
-   Then Settings → Networking → Generate Domain.
+```
+src/world.rs   deterministic infinite chunk generation (same hash as the Ruby version)
+src/game.rs    game rules/state, no rendering — fully unit-tested (cargo test)
+src/main.rs    window, fixed 60 Hz loop, input, drawing, letterboxed 1280x720
+assets/        sprites + fonts (DejaVu, free license)
+web-template/  index.html + miniquad's gl.js loader for the browser build
+```
 
-Local test: `node server.js` then open http://localhost:3000
+Controls: WASD/arrows or click to move, SPACE break outcrop, M map, C cards.
+
+### Run natively
+`cargo run --release`
+
+### Run in the browser locally
+```fish
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown
+mkdir -p public; cp web-template/* public/; cp target/wasm32-unknown-unknown/release/outcrops_odyssey.wasm public/; cp -r assets public/
+node server.js   # http://localhost:3000
+```
+
+### Deploy to Railway
+Railway builds the `Dockerfile` (compiles the wasm, then serves it with
+`server.js`). New Project → Deploy from GitHub repo → pick this repo →
+Settings → Networking → Generate Domain. Health check: `/healthz`.

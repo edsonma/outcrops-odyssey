@@ -1,12 +1,12 @@
-// Minimal static server for the DragonRuby HTML5 build. No dependencies.
-// DragonRuby's web runtime needs SharedArrayBuffer, which browsers only enable
-// when the page is cross-origin isolated (COOP + COEP headers below).
+// Minimal static server for the Rust/WebAssembly build. No dependencies.
+// Serves ./public (override with STATIC_DIR) with correct MIME types
+// (notably application/wasm) and gzip for text/wasm payloads.
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 
-const ROOT = path.join(__dirname, "web");
+const ROOT = path.resolve(__dirname, process.env.STATIC_DIR || "public");
 const PORT = process.env.PORT || 3000;
 
 const TYPES = {
@@ -20,9 +20,6 @@ const TYPES = {
 const COMPRESSIBLE = new Set([".html", ".js", ".wasm", ".css", ".json", ".txt", ".rb", ".data"]);
 
 const BASE_HEADERS = {
-  "Cross-Origin-Opener-Policy": "same-origin",
-  "Cross-Origin-Embedder-Policy": "require-corp",
-  "Cross-Origin-Resource-Policy": "same-origin",
   "X-Content-Type-Options": "nosniff",
 };
 
@@ -45,7 +42,7 @@ http.createServer((req, res) => {
   if (!fs.existsSync(file)) {
     if (!fs.existsSync(path.join(ROOT, "index.html"))) {
       return send(res, 503, { "Content-Type": "text/html; charset=utf-8" },
-        "<h1>Outcrops Odyssey</h1><p>No web build found. Run <code>scripts/build-web.fish</code> and commit <code>web/</code>.</p>");
+        "<h1>Outcrops Odyssey</h1><p>No web build found. Build with the Dockerfile (it compiles the wasm).</p>");
     }
     return send(res, 404, { "Content-Type": "text/plain" }, "Not found");
   }

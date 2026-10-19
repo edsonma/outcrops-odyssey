@@ -1,4 +1,5 @@
+/target
+/project
+/.git
 /*.png
 /*.docx
-/project
-.git

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Outcrops Odyssey</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; outline: none; }
+    #loading { position: fixed; inset: 0; display: grid; place-items: center;
+      color: #d8cfae; font: 20px/1.4 system-ui, sans-serif; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" tabindex="1"></canvas>
+  <div id="loading">Loading Outcrops Odyssey…</div>
+  <script src="gl.js"></script>
+  <script>
+    load("outcrops_odyssey.wasm");
+    // hide the loading text once the first frame has been drawn
+    const t = setInterval(() => {
+      const c = document.getElementById("glcanvas");
+      if (c && c.width > 0 && window.wasm_exports) { document.getElementById("loading").remove(); clearInterval(t); }
+    }, 300);
+  </script>
+</body>
+</html>

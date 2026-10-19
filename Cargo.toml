@@ -1,0 +1,15 @@
+[package]
+name = "outcrops_odyssey"
+version = "0.3.0"
+edition = "2021"
+description = "Outcrops Odyssey - geology open-world card collector (Rust / Macroquad)"
+
+[dependencies]
+macroquad = { version = "0.4", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
