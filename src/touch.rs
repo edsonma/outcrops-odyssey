@@ -3,6 +3,7 @@
 //! 1280x720 virtual screen with y pointing UP.
 
 use crate::game::*;
+use crate::kit::{NOT_HUNGRY_ABOVE, WATER_MAX};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BtnId {
@@ -10,6 +11,8 @@ pub enum BtnId {
     Act,
     Map,
     Cards,
+    Pack,
+    Use,
     Close,
     Prev,
     Next,
@@ -42,7 +45,7 @@ pub fn buttons(g: &Game) -> Vec<Button> {
         return v;
     }
     match g.ui_mode {
-        UiMode::Map => v.push(b(BtnId::Close, 1000.0, 580.0, 80.0, 70.0, "X", true)),
+        UiMode::Map | UiMode::Backpack => v.push(b(BtnId::Close, 1000.0, 580.0, 80.0, 70.0, "X", true)),
         UiMode::Cards => {
             v.push(b(BtnId::Close, 1000.0, 580.0, 80.0, 70.0, "X", true));
             v.push(b(BtnId::Prev, 70.0, 330.0, 100.0, 90.0, "\u{25B2}", false));
@@ -52,6 +55,9 @@ pub fn buttons(g: &Game) -> Vec<Button> {
             v.push(b(BtnId::Map, 1180.0, 470.0, 80.0, 70.0, "MAP", false));
             v.push(b(BtnId::Cards, 1180.0, 390.0, 80.0, 70.0, "CARDS", false));
             if g.player_visible() {
+                v.push(b(BtnId::Pack, 1180.0, 310.0, 80.0, 70.0, "PACK", g.pickaxe.broken()));
+            }
+            if g.player_visible() {
                 let act = match g.phase {
                     Phase::Basecamp => ("BOARD", g.near_truck()),
                     Phase::Exploring => ("TRUCK", g.player_on_road()),
@@ -60,6 +66,16 @@ pub fn buttons(g: &Game) -> Vec<Button> {
                 v.push(b(BtnId::Act, 930.0, 40.0, 130.0, 110.0, act.0, act.1));
                 if g.phase == Phase::Exploring {
                     v.push(b(BtnId::Break, 1090.0, 40.0, 170.0, 170.0, "BREAK", g.nearest_outcrop().is_some()));
+                    // context button: fill the bottle at water, eat under a tree
+                    let thirsty = g.water < WATER_MAX - 0.5;
+                    let (text, hot) = if g.near_water() && thirsty {
+                        ("FILL", true)
+                    } else if g.near_tree() && g.apples + g.sandwiches > 0 && g.energy <= NOT_HUNGRY_ABOVE {
+                        ("EAT", true)
+                    } else {
+                        ("USE", false)
+                    };
+                    v.push(b(BtnId::Use, 930.0, 160.0, 130.0, 90.0, text, hot));
                 }
             }
         }
@@ -81,10 +97,13 @@ pub fn apply(id: BtnId, input: &mut Input, ui: UiMode) {
         BtnId::Act => input.interact_pressed = true,
         BtnId::Map => input.map_pressed = true,
         BtnId::Cards => input.cards_pressed = true,
+        BtnId::Pack => input.pack_pressed = true,
+        BtnId::Use => input.use_pressed = true,
         BtnId::Close => {
             // closing is a toggle of whichever overlay is open
             match ui {
                 UiMode::Cards => input.cards_pressed = true,
+                UiMode::Backpack => input.pack_pressed = true,
                 _ => input.map_pressed = true,
             }
         }
@@ -200,6 +219,10 @@ mod tests {
         g.ui_mode = UiMode::None;
         g.phase = Phase::TruckOut;
         assert_eq!(ids(&g), vec![BtnId::Map, BtnId::Cards]);
+        g.ui_mode = UiMode::Backpack;
+        g.phase = Phase::Exploring;
+        assert_eq!(ids(&g), vec![BtnId::Close]);
+        g.ui_mode = UiMode::None;
         g.phase = Phase::GameOver;
         assert_eq!(ids(&g), vec![BtnId::Restart]);
     }
@@ -207,7 +230,7 @@ mod tests {
     #[test]
     fn buttons_stay_on_screen_and_do_not_overlap_the_stick_zone() {
         for phase in [Phase::Basecamp, Phase::Exploring, Phase::TruckOut, Phase::GameOver] {
-            for ui in [UiMode::None, UiMode::Map, UiMode::Cards] {
+            for ui in [UiMode::None, UiMode::Map, UiMode::Cards, UiMode::Backpack] {
                 let mut g = Game::new(1);
                 g.phase = phase;
                 g.ui_mode = ui;
@@ -261,6 +284,26 @@ mod tests {
         g.ui_mode = UiMode::None;
         g.phase = Phase::TruckBack;
         assert!(matches!(t.down(2, 200.0, 150.0, &g), Tap::World(..)));
+    }
+
+    #[test]
+    fn pack_and_use_buttons_work_in_the_field() {
+        let mut g = field_game();
+        let ids = |g: &Game| buttons(g).iter().map(|b| b.id).collect::<Vec<_>>();
+        assert!(ids(&g).contains(&BtnId::Pack) && ids(&g).contains(&BtnId::Use));
+        // PACK opens the backpack and its X closes it again
+        let mut inp = Input::default();
+        apply(BtnId::Pack, &mut inp, UiMode::None);
+        g.tick(&inp);
+        assert_eq!(g.ui_mode, UiMode::Backpack);
+        let mut inp = Input::default();
+        apply(BtnId::Close, &mut inp, UiMode::Backpack);
+        g.tick(&inp);
+        assert_eq!(g.ui_mode, UiMode::None);
+        // USE is the F key: it flags use_pressed
+        let mut inp = Input::default();
+        apply(BtnId::Use, &mut inp, UiMode::None);
+        assert!(inp.use_pressed);
     }
 
     #[test]

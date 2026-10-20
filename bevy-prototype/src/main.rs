@@ -14,6 +14,15 @@ mod game;
 #[path = "../../src/world.rs"]
 #[allow(dead_code)]
 mod world;
+#[path = "../../src/terrain.rs"]
+#[allow(dead_code)]
+mod terrain;
+#[path = "../../src/geology.rs"]
+#[allow(dead_code)]
+mod geology;
+#[path = "../../src/kit.rs"]
+#[allow(dead_code)]
+mod kit;
 
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{CascadeShadowConfigBuilder, GlobalAmbientLight};
@@ -636,8 +645,8 @@ fn update_hud(
             "Outcrop Points: {}\nXP: {}   Bag: {}/{}\nEnergy: {:.0}%\nDay {}   {:02}:{:02}   (sunset 18:00)\n[V] camera: {}",
             g.outcrop_points,
             g.xp,
-            g.inventory_count,
-            INVENTORY_CAP,
+            g.backpack_used(),
+            kit::BACKPACK_SLOTS,
             g.energy,
             g.day,
             m / 60,

@@ -2,6 +2,9 @@
 //! prototype). The same chunk coordinates always regenerate the same
 //! content. World coordinates are y-up, matching the original game.
 
+use crate::geology::{pick_rock, Region};
+use crate::terrain::{Ground, Terrain};
+
 pub const CHUNK: i32 = 640;
 pub const VIEW_RADIUS_CHUNKS: i32 = 2;
 
@@ -74,7 +77,6 @@ pub const CARD_ADJECTIVES: [&str; 12] = [
     "Ancient", "Weathered", "Crystalline", "Rugged", "Sunlit", "Deep",
     "Mossy", "Jagged", "Polished", "Faded", "Banded", "Coarse",
 ];
-pub const LITHOLOGIES: [&str; 3] = ["Igneous", "Sedimentary", "Metamorphic"];
 
 pub fn chunk_hash(cx: i32, cy: i32, salt: i32) -> i64 {
     let cxm = (cx as i64).rem_euclid(46_340);
@@ -100,7 +102,18 @@ pub struct Outcrop {
     pub id: String,
     pub x: f32,
     pub y: f32,
+    /// Igneous | Sedimentary | Metamorphic
     pub lithology: &'static str,
+    /// Index into the region's `units`.
+    pub unit: usize,
+    /// Specific rock type, e.g. "Itabirite".
+    pub rock: &'static str,
+}
+
+impl Outcrop {
+    pub fn new(id: &str, x: f32, y: f32, unit: usize, rock: &'static str, lithology: &'static str) -> Self {
+        Outcrop { id: id.to_string(), x, y, lithology, unit, rock }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -117,23 +130,35 @@ pub struct Chunk {
     pub dirt_patches: Vec<Point>,
 }
 
-pub fn generate_chunk(cx: i32, cy: i32) -> Chunk {
+pub fn generate_chunk(cx: i32, cy: i32, terrain: &Terrain, region: &Region) -> Chunk {
     let grass_variant = chunk_rand_int(cx, cy, 1, 3);
     let outcrop_count = chunk_rand_int(cx, cy, 2, 4); // 0..=3
     let tree_count = chunk_rand_int(cx, cy, 3, 3); // 0..=2
     let (ox, oy) = (cx * CHUNK, cy * CHUNK);
 
-    // Nothing spawns on a main road or inside the basecamp.
-    let clear = |x: f32, y: f32, m: f32| !on_road(x, y, m) && !in_camp(x, y, m);
+    // Nothing spawns on a main road, inside the basecamp, or on ground you
+    // can't stand on (lakes, farms, dense forest, cliffs) or wade through.
+    let clear = |x: f32, y: f32, m: f32| {
+        !on_road(x, y, m) && !in_camp(x, y, m) && terrain.ground(x, y) == Ground::Open
+    };
 
+    // Each spot belongs to the geological unit mapped under it; the unit decides
+    // how often rock is exposed there and which rock type it is.
     let outcrops = (0..outcrop_count)
-        .map(|i| Outcrop {
-            id: format!("{cx}_{cy}_{i}"),
-            x: (ox + chunk_rand_int(cx, cy, 10 + i, CHUNK - 40) + 20) as f32,
-            y: (oy + chunk_rand_int(cx, cy, 20 + i, CHUNK - 40) + 20) as f32,
-            lithology: LITHOLOGIES[chunk_rand_int(cx, cy, 40 + i, 3) as usize],
+        .filter_map(|i| {
+            let x = (ox + chunk_rand_int(cx, cy, 10 + i, CHUNK - 40) + 20) as f32;
+            let y = (oy + chunk_rand_int(cx, cy, 20 + i, CHUNK - 40) + 20) as f32;
+            if !clear(x, y, 50.0) {
+                return None;
+            }
+            let unit = region.unit_at(terrain, x, y);
+            let u = &region.units[unit];
+            if chunk_rand_int(cx, cy, 100 + i, 100) as u32 >= u.exposure {
+                return None;
+            }
+            let (rock, lithology) = pick_rock(u, chunk_hash(cx, cy, 40 + i) as u32);
+            Some(Outcrop { id: format!("{}:{cx}_{cy}_{i}", region.id), x, y, lithology, unit, rock })
         })
-        .filter(|o| clear(o.x, o.y, 50.0))
         .collect();
 
     let trees = (0..tree_count)
@@ -165,12 +190,13 @@ pub fn card_name(o: &Outcrop) -> String {
         .chars()
         .fold(7i64, |acc, ch| (acc * 31 + ch as i64) % 100_000);
     let adj = CARD_ADJECTIVES[(seed as usize) % CARD_ADJECTIVES.len()];
-    format!("{adj} {}", o.lithology)
+    format!("{adj} {}", o.rock)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geology::REGIONS;
 
     #[test]
     fn hash_is_deterministic_and_bounded_for_extreme_coords() {
@@ -196,10 +222,12 @@ mod tests {
 
     #[test]
     fn chunks_are_stable_and_within_bounds() {
+        let t = Terrain::default();
+        let r = &REGIONS[0];
         for cx in -6..=6 {
             for cy in -6..=6 {
-                let a = generate_chunk(cx, cy);
-                let b = generate_chunk(cx, cy);
+                let a = generate_chunk(cx, cy, &t, r);
+                let b = generate_chunk(cx, cy, &t, r);
                 assert_eq!(a.outcrops.len(), b.outcrops.len());
                 assert!(a.outcrops.len() <= 3 && a.trees.len() <= 2 && a.dirt_patches.len() <= 1);
                 assert!((0..3).contains(&a.grass_variant));
@@ -213,9 +241,11 @@ mod tests {
 
     #[test]
     fn nothing_spawns_on_roads_or_in_camp() {
+        let t = Terrain::default();
+        let r = &REGIONS[0];
         for cx in -12..=12 {
             for cy in -12..=12 {
-                let c = generate_chunk(cx, cy);
+                let c = generate_chunk(cx, cy, &t, r);
                 for o in &c.outcrops {
                     assert!(!on_road(o.x, o.y, 0.0) && !in_camp(o.x, o.y, 0.0), "{:?}", o);
                 }
@@ -224,6 +254,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn nothing_spawns_on_water_farms_forest_or_cliffs() {
+        let t = Terrain::default();
+        let r = &REGIONS[0];
+        let mut outcrops = 0;
+        for cx in -14..=14 {
+            for cy in -14..=14 {
+                let c = generate_chunk(cx, cy, &t, r);
+                for o in &c.outcrops {
+                    outcrops += 1;
+                    assert_eq!(t.ground(o.x, o.y), Ground::Open, "{:?}", o);
+                }
+                for tr in &c.trees {
+                    assert_eq!(t.ground(tr.x, tr.y), Ground::Open);
+                }
+                for d in &c.dirt_patches {
+                    assert_eq!(t.ground(d.x, d.y), Ground::Open);
+                }
+            }
+        }
+        assert!(outcrops > 200);
     }
 
     #[test]
@@ -264,8 +317,29 @@ mod tests {
 
     #[test]
     fn card_names_are_stable() {
-        let o = Outcrop { id: "0_0_0".into(), x: 0.0, y: 0.0, lithology: "Igneous" };
+        let o = Outcrop::new("0_0_0", 0.0, 0.0, 0, "Basalt", "Igneous");
         assert_eq!(card_name(&o), card_name(&o));
-        assert!(card_name(&o).ends_with("Igneous"));
+        assert!(card_name(&o).ends_with("Basalt"));
+    }
+
+    #[test]
+    fn every_outcrop_belongs_to_the_unit_mapped_at_its_location() {
+        for r in REGIONS.iter() {
+            let t = r.terrain();
+            let mut seen = 0;
+            for cx in -5..5 {
+                for cy in -5..5 {
+                    for o in generate_chunk(cx, cy, &t, r).outcrops {
+                        let u = r.unit_at(&t, o.x, o.y);
+                        assert_eq!(o.unit, u, "{} {}", r.name, o.id);
+                        assert!(r.units[u].rocks.iter().any(|x| x.0 == o.rock && x.2 == o.lithology), "{}: {} not in {}", r.name, o.rock, r.units[u].name);
+                        assert!(o.id.starts_with(r.id));
+                        assert_eq!(t.ground(o.x, o.y), crate::terrain::Ground::Open);
+                        seen += 1;
+                    }
+                }
+            }
+            assert!(seen > 40, "{} has only {} outcrops", r.name, seen);
+        }
     }
 }
