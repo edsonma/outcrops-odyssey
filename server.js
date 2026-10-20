@@ -28,6 +28,23 @@ function send(res, status, headers, body) {
   res.end(body);
 }
 
+// Each compressible file is compressed once (brotli q11 + gzip 9) and kept in memory: the
+// big .wasm costs a few seconds of CPU at the first request, then every visitor gets it for free.
+const cache = new Map();
+function load(file, ext) {
+  const st = fs.statSync(file);
+  const hit = cache.get(file);
+  if (hit && hit.mtime === st.mtimeMs) return hit;
+  const raw = fs.readFileSync(file);
+  const entry = { mtime: st.mtimeMs, raw, etag: `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"` };
+  if (COMPRESSIBLE.has(ext)) {
+    entry.br = zlib.brotliCompressSync(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11, [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length } });
+    entry.gz = zlib.gzipSync(raw, { level: 9 });
+  }
+  cache.set(file, entry);
+  return entry;
+}
+
 http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
   if (url.pathname === "/healthz") return send(res, 200, { "Content-Type": "text/plain" }, "ok");
@@ -48,18 +65,31 @@ http.createServer((req, res) => {
   }
 
   const ext = path.extname(file).toLowerCase();
+  const e = load(file, ext);
   const headers = {
     "Content-Type": TYPES[ext] || "application/octet-stream",
-    "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=3600",
+    // revalidate cheaply (ETag -> 304); html always, the rest may be reused for a day
+    "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=86400, stale-while-revalidate=604800",
+    "ETag": e.etag,
     "Vary": "Accept-Encoding",
+    // lets the loading screen show a true percentage even though the body is compressed
+    "X-Uncompressed-Length": String(e.raw.length),
+    "Access-Control-Expose-Headers": "X-Uncompressed-Length",
   };
-  const stream = fs.createReadStream(file);
-  if (req.method === "HEAD") return send(res, 200, headers, undefined);
-  if (COMPRESSIBLE.has(ext) && /\bgzip\b/.test(req.headers["accept-encoding"] || "")) {
-    res.writeHead(200, { ...BASE_HEADERS, ...headers, "Content-Encoding": "gzip" });
-    stream.pipe(zlib.createGzip()).pipe(res);
-  } else {
-    res.writeHead(200, { ...BASE_HEADERS, ...headers });
-    stream.pipe(res);
+  if (req.headers["if-none-match"] === e.etag) return send(res, 304, headers);
+
+  const accept = req.headers["accept-encoding"] || "";
+  let body = e.raw;
+  if (e.br && /\bbr\b/.test(accept)) { body = e.br; headers["Content-Encoding"] = "br"; }
+  else if (e.gz && /\bgzip\b/.test(accept)) { body = e.gz; headers["Content-Encoding"] = "gzip"; }
+  headers["Content-Length"] = String(body.length);
+  return send(res, 200, headers, req.method === "HEAD" ? undefined : body);
+}).listen(PORT, "0.0.0.0", () => {
+  console.log(`Outcrops Odyssey web on :${PORT}`);
+  // warm the cache so the first visitor does not pay for brotli q11
+  for (const f of fs.readdirSync(ROOT)) {
+    const ext = path.extname(f).toLowerCase();
+    if (COMPRESSIBLE.has(ext)) try { load(path.join(ROOT, f), ext); } catch {}
   }
-}).listen(PORT, "0.0.0.0", () => console.log(`Outcrops Odyssey web on :${PORT}`));
+  console.log("compressed assets ready");
+});

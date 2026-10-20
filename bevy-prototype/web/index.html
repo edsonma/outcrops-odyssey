@@ -3,35 +3,137 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>Outcrops Odyssey — Bevy 3D prototype</title>
+  <title>Outcrops Odyssey</title>
   <style>
     html, body { margin: 0; height: 100%; background: #0b0f0a; overflow: hidden; touch-action: none;
       overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
     canvas#bevy { display: block; width: 100%; height: 100%; outline: none; }
-    #status { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px;
-      color: #d8cfae; font: 18px/1.5 system-ui, sans-serif; pointer-events: none; }
-    #status.error { color: #ff9c8a; pointer-events: auto; }
+
+    /* ---- opening / loading page ---- */
+    #splash { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 22px; padding: 24px; text-align: center; color: #efe6c8;
+      font-family: Georgia, "Times New Roman", serif;
+      background: radial-gradient(ellipse at 50% 30%, #35502f 0%, #1a2a1a 55%, #0b0f0a 100%);
+      transition: opacity .7s ease, visibility .7s; }
+    #splash.done { opacity: 0; visibility: hidden; pointer-events: none; }
+    #splash h1 { margin: 0; font-size: clamp(32px, 7vw, 64px); letter-spacing: .04em; font-weight: 700;
+      text-shadow: 0 3px 0 #0006, 0 0 40px #e8a24a55; }
+    #splash h1 span { color: #f0a04a; }
+    #splash .sub { margin: -10px 0 0; font-size: clamp(14px, 2.6vw, 20px); color: #b9c8a0; font-style: italic; }
+    /* a little stack of rock strata that fills as the game downloads */
+    #strata { position: relative; width: min(340px, 74vw); height: 120px; border-radius: 6px; overflow: hidden;
+      box-shadow: 0 8px 28px #0008; background: #1c1c18; }
+    #strata i { position: absolute; left: 0; right: 0; display: block; }
+    #strata .fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0%; transition: height .25s ease-out; overflow: hidden; }
+    #strata .fill i:nth-child(1) { bottom: 0;    height: 20%; background: #7a4a2b; }
+    #strata .fill i:nth-child(2) { bottom: 20%;  height: 16%; background: #b87b4a; }
+    #strata .fill i:nth-child(3) { bottom: 36%;  height: 22%; background: #d8b98a; }
+    #strata .fill i:nth-child(4) { bottom: 58%;  height: 14%; background: #8c8f6a; }
+    #strata .fill i:nth-child(5) { bottom: 72%;  height: 16%; background: #c9a36a; }
+    #strata .fill i:nth-child(6) { bottom: 88%;  height: 12%; background: #5f8a3e; }
+    #strata .hammer { position: absolute; right: 10px; top: 6px; font-size: 26px; transform-origin: 80% 90%;
+      animation: tap 0.9s ease-in-out infinite; }
+    @keyframes tap { 0%,100% { transform: rotate(-18deg); } 50% { transform: rotate(22deg); } }
+    #bar { width: min(340px, 74vw); height: 8px; border-radius: 4px; background: #ffffff1c; overflow: hidden; }
+    #bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, #f0a04a, #ffd27a); transition: width .25s ease-out; }
+    #msg { font: 15px/1.4 system-ui, sans-serif; color: #cfd8bd; min-height: 1.4em; }
+    #tip { max-width: 440px; font: 14px/1.5 system-ui, sans-serif; color: #98a688; }
+    #splash.error h1 span, #splash.error #msg { color: #ff9c8a; }
+    #splash.error .hammer { animation: none; }
+    #retry { display: none; font: 600 15px system-ui, sans-serif; padding: 10px 22px; border: 0; border-radius: 8px;
+      background: #f0a04a; color: #20150a; cursor: pointer; }
+    #splash.error #retry { display: inline-block; }
   </style>
 </head>
 <body>
   <canvas id="bevy"></canvas>
-  <div id="status">Loading Outcrops Odyssey… (first load downloads the game, this can take a moment)</div>
+
+  <div id="splash">
+    <h1>Outcrops <span>Odyssey</span></h1>
+    <p class="sub">Read the rocks. Walk the land. Collect the cards.</p>
+    <div id="strata"><div class="fill" id="fill"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="hammer">⛏️</div></div>
+    <div id="bar"><div id="barfill"></div></div>
+    <div id="msg">Preparing the expedition…</div>
+    <div id="tip"></div>
+    <button id="retry" onclick="location.reload()">Try again</button>
+  </div>
+
   <script type="module">
-    import init from "./outcrops_bevy.js";
-    const status = document.getElementById("status");
-    try {
-      await init();             // starts the Bevy app; this promise only settles if it exits/errors
-    } catch (e) {
-      // Bevy "returns" via an exception on the web once its event loop is running; that one is normal.
-      if (!String(e).includes("Using exceptions for control flow")) {
-        status.className = "error";
-        status.textContent = "Could not start: " + e + "  (needs a browser with WebGL2" + ")";
-        console.error(e);
-        throw e;
-      }
+    const $ = (id) => document.getElementById(id);
+    const splash = $("splash");
+    const TIPS = [
+      "Tip: contour lines get closer together where the slope is steep.",
+      "Tip: head back to a main road before sunset, night in the field ends the run.",
+      "Tip: fill your bottle at lakes and rivers; rest and snack in the shade of a tree.",
+      "Tip: layers (strata) tilt with the dip; the youngest rocks are usually on top.",
+      "Tip: press B for your backpack, V to change the camera.",
+    ];
+    $("tip").textContent = TIPS[Math.floor(Math.random() * TIPS.length)];
+
+    function progress(frac, msg) {
+      const p = Math.max(0, Math.min(1, frac));
+      $("barfill").style.width = (p * 100).toFixed(1) + "%";
+      $("fill").style.height = (p * 100).toFixed(1) + "%";
+      if (msg) $("msg").textContent = msg;
     }
-    // hide the status text once the first frame is drawn
-    requestAnimationFrame(() => status.remove());
+    function fail(e) {
+      splash.classList.add("error");
+      progress(0, "Could not start: " + e + "  (needs a browser with WebGL2)");
+      console.error(e);
+    }
+
+    // Download the wasm ourselves so we can show a true percentage. The server reports the
+    // uncompressed size in X-Uncompressed-Length (the body itself is brotli/gzip compressed).
+    async function fetchWasm(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      const total = Number(res.headers.get("X-Uncompressed-Length")) || Number(res.headers.get("Content-Length")) || 0;
+      const compressed = !!res.headers.get("Content-Encoding");
+      if (!res.body || !total) return res;
+      let got = 0;
+      const reader = res.body.getReader();
+      const body = new ReadableStream({
+        async pull(ctl) {
+          const { done, value } = await reader.read();
+          if (done) { ctl.close(); progress(0.92, "Starting the engine…"); return; }
+          got += value.length;
+          // when the body is compressed, `got` is compressed bytes: scale against the compressed length if known
+          const denom = compressed ? Number(res.headers.get("Content-Length")) || 0 : total;
+          if (denom) progress((got / denom) * 0.92, `Unpacking the field kit… ${Math.min(99, Math.round((got / denom) * 100))}%`);
+          ctl.enqueue(value);
+        },
+        cancel() { reader.cancel(); },
+      });
+      return new Response(body, { headers: { "Content-Type": "application/wasm" } });
+    }
+
+    try {
+      progress(0.02, "Downloading the game…");
+      const { default: init } = await import("./outcrops_bevy.js");
+      const wasm = fetchWasm("./outcrops_bevy_bg.wasm");
+      // hide the splash once the first frames are on screen (the engine keeps streaming textures in)
+      let started = false;
+      const reveal = () => {
+        if (started) return;
+        started = true;
+        progress(1, "Ready!");
+        setTimeout(() => { splash.classList.add("done"); setTimeout(() => splash.remove(), 900); }, 1800);
+      };
+      const watchdog = setTimeout(reveal, 60000);
+      try {
+        const p = init({ module_or_path: wasm });
+        // Bevy starts its loop inside init(); it only settles via the control-flow exception below
+        await p;
+      } catch (e) {
+        // Bevy "returns" via an exception on the web once its event loop is running; that one is normal.
+        if (!String(e).includes("Using exceptions for control flow")) { clearTimeout(watchdog); return fail(e); }
+      }
+      clearTimeout(watchdog);
+      progress(0.96, "Loading terrain and textures…");
+      requestAnimationFrame(() => requestAnimationFrame(reveal));
+    } catch (e) {
+      fail(e);
+    }
   </script>
 </body>
 </html>
