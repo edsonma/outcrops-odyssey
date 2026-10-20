@@ -1,5 +1,0 @@
-devid=edsonma
-devtitle=Edson Ma
-gameid=outcrops-odyssey
-gametitle=Outcrops Odyssey
-version=0.2

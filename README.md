@@ -89,8 +89,7 @@ each unit and its age. Cards show the rock, unit, group and age plus any mineral
 - **Cards**, **map**, **basecamp / roads / truck**, field clock, energy, "nearest road" compass and
   sunset warning.
 
-> Differences from the original design: there is no free noon energy any more (food replaces it),
-> and the worlds are no longer identical to the Ruby prototype's.
+> Differences from the original design: there is no free noon energy any more (food replaces it).
 
 ## Not built yet
 
@@ -117,7 +116,6 @@ Dockerfile        builds the wasm, then serves it with server.js
 railway.json      Railway config (Dockerfile build, /healthz health check)
 .github/workflows CI: cargo test + wasm build
 bevy-prototype/   3D renderer prototype (Bevy) reusing src/game.rs + src/world.rs — see its README
-project/          the original DragonRuby prototype, kept for reference only
 ```
 
 `game.rs`, `world.rs`, `terrain.rs`, `geology.rs`, `kit.rs` and `touch.rs` contain no rendering or window code, so the whole game loop
@@ -148,6 +146,15 @@ node server.js   # http://localhost:3000
 **Deploy to Railway**: New Project → Deploy from GitHub repo → pick this repo → Settings →
 Networking → Generate Domain. Railway builds the `Dockerfile`; the health check is `/healthz`.
 
+## 3D prototype (Bevy)
+
+`bevy-prototype/` is an experimental 3D front-end for the **same game rules** (it includes
+`src/game.rs`, `world.rs`, `terrain.rs`, `geology.rs` and `kit.rs` unchanged): tilted or side-on
+camera (**V**), PBR textures, a sun that follows the game clock, 3D terrain with lakes, cliffs,
+forest and farms, glTF trees, and the backpack screen. It is **not** wired into Railway or CI-tested
+in the browser yet, and the map and cards screens are not ported. Run it with
+`cd bevy-prototype; cargo run --release`; see `bevy-prototype/README.md`.
+
 ## Art credits
 
 Grass, rock, dirt and canopy textures are composited from CC0 photo textures by
@@ -157,5 +164,5 @@ character. UI text uses DejaVu Sans.
 
 ## History
 
-v0.1 was a DragonRuby (mruby) prototype; the game was ported to Rust in v0.3, keeping the same
-chunk hash so worlds match. The prototype remains under `project/mygame`.
+v0.1 was a DragonRuby prototype, ported to Rust in v0.3 (the old prototype has since been removed
+from the repository; it remains in the git history before the commit that deleted `project/`).

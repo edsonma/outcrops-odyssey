@@ -1,6 +1,5 @@
-//! Deterministic, infinite world generation (Rust port of the DragonRuby
-//! prototype). The same chunk coordinates always regenerate the same
-//! content. World coordinates are y-up, matching the original game.
+//! Deterministic, infinite world generation. The same chunk coordinates
+//! (and region) always regenerate the same content. World coordinates are y-up.
 
 use crate::geology::{pick_rock, Region};
 use crate::terrain::{Ground, Terrain};

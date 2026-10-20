@@ -1,6 +1,3 @@
 /target/
-project/builds/
-project/logs/
-project/tmp/
 .DS_Store
 bevy-prototype/target/

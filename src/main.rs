@@ -90,7 +90,7 @@ fn sprite(a: &Assets, name: &str, x: f32, y: f32, w: f32, h: f32, alpha: u8, fli
     );
 }
 
-/// `size_enum` mirrors the original DragonRuby label sizes (0 = 22px, +/-2px per step).
+/// `size_enum` keeps the original label size steps (0 = 22px, +/-2px per step).
 fn label(a: &Assets, text: &str, x: f32, y: f32, size_enum: i32, center: bool, c: Color, bold: bool) {
     let size = (22 + 2 * size_enum) as u16;
     let font = if bold { &a.font_bold } else { &a.font };
