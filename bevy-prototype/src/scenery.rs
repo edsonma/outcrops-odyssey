@@ -122,7 +122,7 @@ impl Surfaces {
                 ..textured(assets, "grass", Color::srgb(0.85, 1.12, 0.70), 0.25, 1.0, 0.0)
             }),
             // cliffs show banded sedimentary layers (see terrain_view for the dipping UVs)
-            strata: m.add(textured(assets, "strata", Color::srgb(0.95, 0.92, 0.88), 0.3, 0.95, 0.0)),
+            strata: m.add(textured(assets, "strata", Color::srgb(1.0, 0.95, 0.84), 0.3, 0.95, 0.0)),
             road: m.add(textured(assets, "asphalt", Color::srgb(0.9, 0.9, 0.95), 0.35, 0.88, 0.0)),
             dash: m.add(plain(Color::srgb(0.92, 0.78, 0.25), 0.7, 0.0)),
             yard: m.add(textured(assets, "gravel", Color::srgb(1.0, 0.96, 0.9), 0.4, 1.0, 0.0)),
