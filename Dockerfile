@@ -4,7 +4,7 @@
 
 # ---- stage 1: compile to wasm and generate the JS glue ----
 FROM rust:1-slim AS build
-RUN apt-get update && apt-get install -y --no-install-recommends binaryen ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 RUN rustup target add wasm32-unknown-unknown
 # MUST equal the `wasm-bindgen` version in bevy-prototype/Cargo.lock
@@ -19,11 +19,10 @@ WORKDIR /src/bevy-prototype
 # Set CARGO_FEATURES="--no-default-features --features webgpu" for the WebGPU build
 ARG CARGO_FEATURES=""
 RUN cargo build --release --locked --target wasm32-unknown-unknown ${CARGO_FEATURES}
+# No wasm-opt here: the Debian binaryen is too old for the features rustc emits and strips the
+# exported `__wasm_bindgen_func_elem_*` closures ("wasm.__wasm_bindgen_func_elem_N is not a function").
 RUN wasm-bindgen --target web --no-typescript --out-dir /out --out-name outcrops_bevy \
-      target/wasm32-unknown-unknown/release/outcrops_bevy.wasm \
- && (wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
-      -o /tmp/opt.wasm /out/outcrops_bevy_bg.wasm && mv /tmp/opt.wasm /out/outcrops_bevy_bg.wasm \
-      || echo "wasm-opt skipped")
+      target/wasm32-unknown-unknown/release/outcrops_bevy.wasm
 
 # ---- stage 2: tiny static server (same server.js as the Macroquad build) ----
 FROM node:22-alpine
