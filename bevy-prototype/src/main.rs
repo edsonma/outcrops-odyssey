@@ -26,6 +26,7 @@ mod kit;
 
 mod terrain_view;
 mod kit_ui;
+mod scenery;
 
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{CascadeShadowConfigBuilder, GlobalAmbientLight};
@@ -34,6 +35,7 @@ use bevy::pbr::DistanceFog;
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use game::*;
+use scenery::{PlayerRig, Surfaces, TruckRig, TruckSpeed, WalkAmount};
 use std::collections::HashMap;
 use terrain_view::{ground_y, S};
 use world::*;
@@ -77,10 +79,12 @@ struct Look {
     cliff: Handle<StandardMaterial>,
     water: Handle<StandardMaterial>,
     edge: Handle<StandardMaterial>,
-    /// white, vertex-coloured (fences, crop rows)
-    props: Handle<StandardMaterial>,
     road: Handle<StandardMaterial>,
     dash: Handle<StandardMaterial>,
+    contour: Handle<StandardMaterial>,
+    crop: Handle<StandardMaterial>,
+    fence: Handle<StandardMaterial>,
+    surf: Surfaces,
     rock_raw: Handle<StandardMaterial>,
     rock_visited: Handle<StandardMaterial>,
     rocks: Vec<Handle<Mesh>>,
@@ -92,10 +96,6 @@ struct Look {
 struct Sun;
 #[derive(Component)]
 struct MainCamera;
-#[derive(Component)]
-struct PlayerRig;
-#[derive(Component)]
-struct TruckRig;
 #[derive(Component)]
 struct Campfire;
 #[derive(Component)]
@@ -131,6 +131,8 @@ fn main() {
         .init_resource::<PendingInput>()
         .init_resource::<ChunkEntities>()
         .init_resource::<FarmEntities>()
+        .init_resource::<WalkAmount>()
+        .init_resource::<TruckSpeed>()
         .insert_resource(CamMode::Tilted)
         .insert_resource(ClearColor(Color::srgb(0.55, 0.72, 0.9)))
         .add_systems(Startup, (setup_scene, setup_camp, setup_hud, kit_ui::setup_kit_ui).chain())
@@ -144,6 +146,8 @@ fn main() {
                 sync_chunks,
                 sync_outcrops,
                 sync_actors,
+                scenery::animate_geologist,
+                scenery::spin_wheels,
                 follow_camera,
                 update_environment,
                 update_hud,
@@ -223,12 +227,11 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mut grass = pbr(&assets, "grass", Color::srgb(0.85, 1.12, 0.7), 0.25, LinearRgba::BLACK);
-    grass.perceptual_roughness = 1.0;
+    let surf = Surfaces::load(&assets, &mut mats);
     let look = Look {
         // terrain UVs are in metres, so uv_scale 0.25 repeats the texture every 4 m, seamlessly across chunks
-        grass: mats.add(grass),
-        cliff: mats.add(pbr(&assets, "cliff", Color::srgb(0.85, 0.82, 0.78), 0.2, LinearRgba::BLACK)),
+        grass: surf.grass.clone(),
+        cliff: surf.strata.clone(),
         water: mats.add(StandardMaterial {
             base_color: Color::srgba(0.10, 0.34, 0.55, 0.78),
             alpha_mode: AlphaMode::Blend,
@@ -237,17 +240,18 @@ fn setup_scene(
             ..default()
         }),
         edge: mats.add(plain(Color::srgb(0.02, 0.025, 0.02), 1.0)),
-        props: mats.add(plain(Color::WHITE, 0.9)),
-        road: mats.add(plain(Color::srgb(0.13, 0.13, 0.145), 0.85)),
-        dash: mats.add(plain(Color::srgb(0.92, 0.78, 0.25), 0.7)),
+        road: surf.road.clone(),
+        dash: surf.dash.clone(),
+        contour: mats.add(StandardMaterial { base_color: Color::WHITE, unlit: true, ..default() }),
+        crop: surf.crop.clone(),
+        fence: surf.fence.clone(),
         rock_raw: mats.add(pbr(&assets, "rock", Color::WHITE, 1.5, LinearRgba::new(0.10, 0.075, 0.01, 1.0))),
         rock_visited: mats.add(pbr(&assets, "moss", Color::srgb(0.75, 0.9, 0.7), 1.5, LinearRgba::BLACK)),
         rocks: (0..3).map(|i| meshes.add(make_rock(i as f32 * 2.7 + 0.5))).collect(),
         // glTF pipeline: swap tree.glb for any Blender export and nothing else changes
         tree: assets.load("models/tree.glb#Scene0"),
+        surf,
     };
-    commands.insert_resource(look);
-
     // ---- sun (updated every frame by update_environment) + soft ambient light
     commands.spawn((
         Sun,
@@ -280,58 +284,21 @@ fn setup_scene(
         bevy::core_pipeline::tonemapping::Tonemapping::TonyMcMapface,
     ));
 
-    // ---- player: a small articulated-looking geologist built from primitives
-    let skin = mats.add(plain(Color::srgb(0.87, 0.68, 0.55), 0.8));
-    let vest = mats.add(plain(Color::srgb(0.55, 0.38, 0.22), 0.9));
-    let hat = mats.add(plain(Color::srgb(0.95, 0.85, 0.2), 0.5));
-    commands
-        .spawn((PlayerRig, Transform::default(), Visibility::default()))
-        .with_children(|p| {
-            p.spawn((Mesh3d(meshes.add(Capsule3d::new(0.32, 0.85))), MeshMaterial3d(vest), Transform::from_xyz(0.0, 0.85, 0.0)));
-            p.spawn((Mesh3d(meshes.add(Sphere::new(0.27))), MeshMaterial3d(skin), Transform::from_xyz(0.0, 1.62, 0.0)));
-            p.spawn((
-                Mesh3d(meshes.add(Cylinder::new(0.32, 0.12))),
-                MeshMaterial3d(hat),
-                Transform::from_xyz(0.0, 1.86, 0.0),
-            ));
-        });
-
-    // ---- truck (red cab, green box, 4 wheels); local +X is "forward"
-    let red = mats.add(plain(Color::srgb(0.75, 0.16, 0.12), 0.45));
-    let green = mats.add(plain(Color::srgb(0.27, 0.42, 0.22), 0.7));
-    let glass = mats.add(StandardMaterial { base_color: Color::srgb(0.55, 0.75, 0.9), perceptual_roughness: 0.1, metallic: 0.2, ..default() });
-    let rubber = mats.add(plain(Color::srgb(0.05, 0.05, 0.06), 0.95));
-    commands
-        .spawn((TruckRig, Transform::default(), Visibility::default()))
-        .with_children(|t| {
-            t.spawn((Mesh3d(meshes.add(Cuboid::new(2.1, 1.35, 1.55))), MeshMaterial3d(green), Transform::from_xyz(-0.55, 1.05, 0.0)));
-            t.spawn((Mesh3d(meshes.add(Cuboid::new(1.1, 1.05, 1.5))), MeshMaterial3d(red), Transform::from_xyz(0.95, 0.85, 0.0)));
-            t.spawn((Mesh3d(meshes.add(Cuboid::new(0.08, 0.5, 1.2))), MeshMaterial3d(glass), Transform::from_xyz(1.52, 1.02, 0.0)));
-            for (x, z) in [(-1.0, 0.82), (-1.0, -0.82), (0.95, 0.82), (0.95, -0.82)] {
-                t.spawn((
-                    Mesh3d(meshes.add(Cylinder::new(0.36, 0.22))),
-                    MeshMaterial3d(rubber.clone()),
-                    Transform::from_xyz(x, 0.36, z).with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-                ));
-            }
-        });
+    // ---- the geologist and the vintage pickup (see scenery.rs)
+    scenery::spawn_geologist(&mut commands, &mut meshes, &look.surf);
+    scenery::spawn_truck(&mut commands, &mut meshes, &look.surf);
+    commands.insert_resource(look);
 }
 
 /// The basecamp is a fixed landmark: dirt yard, three cabins, a tent, crates and a campfire,
 /// all standing on whatever relief the current map has under it.
-fn setup_camp(mut commands: Commands, game: Res<GameRes>, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
-    let entity = spawn_camp(&mut commands, &game.0.terrain, &mut meshes, &mut mats);
+fn setup_camp(mut commands: Commands, game: Res<GameRes>, look: Res<Look>, mut meshes: ResMut<Assets<Mesh>>) {
+    let entity = spawn_camp(&mut commands, &game.0.terrain, &mut meshes, &look.surf);
     commands.insert_resource(CampState { entity, level: game.0.level });
 }
 
-fn spawn_camp(commands: &mut Commands, t: &terrain::Terrain, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>) -> Entity {
-    let yard = mats.add(plain(Color::srgb(0.36, 0.28, 0.19), 1.0));
-    let wall = mats.add(plain(Color::srgb(0.45, 0.30, 0.18), 0.9));
-    let roof = mats.add(plain(Color::srgb(0.58, 0.22, 0.17), 0.8));
-    let canvas = mats.add(plain(Color::srgb(0.85, 0.70, 0.28), 0.9));
-    let crate_m = mats.add(plain(Color::srgb(0.55, 0.40, 0.22), 0.95));
-    let log_m = mats.add(plain(Color::srgb(0.18, 0.11, 0.07), 1.0));
-    let ember = mats.add(StandardMaterial { base_color: Color::srgb(1.0, 0.45, 0.1), emissive: LinearRgba::new(6.0, 2.0, 0.3, 1.0), ..default() });
+fn spawn_camp(commands: &mut Commands, t: &terrain::Terrain, meshes: &mut Assets<Mesh>, m: &Surfaces) -> Entity {
+    let (yard, wall, roof, canvas, crate_m, log_m, ember) = (m.yard.clone(), m.wall.clone(), m.roof.clone(), m.canvas.clone(), m.crate_wood.clone(), m.log.clone(), m.ember.clone());
 
     // a point on the ground at game position (x, y)
     let at = |x: f32, y: f32| terrain_view::surface(t, x, y);
@@ -345,10 +312,10 @@ fn spawn_camp(commands: &mut Commands, t: &terrain::Terrain, meshes: &mut Assets
 
         for (cx, cy) in [(-240.0, 400.0), (-60.0, 415.0), (260.0, 410.0)] {
             let p = at(cx, cy);
-            c.spawn((Mesh3d(meshes.add(Cuboid::new(3.0, 1.9, 1.7))), MeshMaterial3d(wall.clone()), Transform::from_translation(p + Vec3::Y * 0.8)));
+            c.spawn((Mesh3d(scenery::tex_box(meshes, 3.0, 1.9, 1.7, 1.2)), MeshMaterial3d(wall.clone()), Transform::from_translation(p + Vec3::Y * 0.8)));
             for sign in [-1.0f32, 1.0] {
                 c.spawn((
-                    Mesh3d(meshes.add(Cuboid::new(3.4, 0.14, 1.15))),
+                    Mesh3d(scenery::tex_box(meshes, 3.4, 0.14, 1.15, 1.0)),
                     MeshMaterial3d(roof.clone()),
                     Transform::from_translation(p + Vec3::new(0.0, 2.0, sign * 0.52)).with_rotation(Quat::from_rotation_x(sign * 0.55)),
                 ));
@@ -361,7 +328,7 @@ fn spawn_camp(commands: &mut Commands, t: &terrain::Terrain, meshes: &mut Assets
             Transform::from_translation(at(340.0, 285.0) + Vec3::Y * 0.85).with_rotation(Quat::from_rotation_y(0.78)),
         ));
         for (cx, cy, s) in [(255.0, 205.0, 0.7), (285.0, 210.0, 0.55), (265.0, 238.0, 0.6)] {
-            c.spawn((Mesh3d(meshes.add(Cuboid::new(s, s, s))), MeshMaterial3d(crate_m.clone()), Transform::from_translation(at(cx, cy) + Vec3::Y * s / 2.0)));
+            c.spawn((Mesh3d(scenery::tex_box(meshes, s, s, s, 0.7)), MeshMaterial3d(crate_m.clone()), Transform::from_translation(at(cx, cy) + Vec3::Y * s / 2.0)));
         }
         // campfire: logs + embers + a flickering light
         let fire = at(-30.0, 240.0);
@@ -486,8 +453,8 @@ fn sync_level(
     mut live: ResMut<ChunkEntities>,
     mut farms: ResMut<FarmEntities>,
     mut camp: ResMut<CampState>,
+    look: Res<Look>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
     let g = &game.0;
     if camp.level == g.level {
@@ -502,7 +469,7 @@ fn sync_level(
         }
     }
     commands.entity(camp.entity).despawn();
-    camp.entity = spawn_camp(&mut commands, &g.terrain, &mut meshes, &mut mats);
+    camp.entity = spawn_camp(&mut commands, &g.terrain, &mut meshes, &look.surf);
     camp.level = g.level;
 }
 
@@ -553,6 +520,9 @@ fn sync_chunks(
                     }
                     if let Some(m) = geo.edge {
                         c.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(look.edge.clone())));
+                    }
+                    if let Some(m) = geo.contours {
+                        c.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(look.contour.clone()), bevy::light::NotShadowCaster));
                     }
                     if let Some(m) = geo.water {
                         c.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(look.water.clone()), bevy::light::NotShadowCaster));
@@ -641,7 +611,14 @@ fn sync_chunks(
                 continue;
             }
             let ent = t.farm_rect(ci, cj).map(|r| {
-                commands.spawn((Mesh3d(meshes.add(terrain_view::build_farm(t, r))), MeshMaterial3d(look.props.clone()))).id()
+                let (crops, fence) = terrain_view::build_farm(t, r);
+                commands
+                    .spawn((Transform::default(), Visibility::default()))
+                    .with_children(|f| {
+                        f.spawn((Mesh3d(meshes.add(crops)), MeshMaterial3d(look.crop.clone()), bevy::light::NotShadowCaster));
+                        f.spawn((Mesh3d(meshes.add(fence)), MeshMaterial3d(look.fence.clone())));
+                    })
+                    .id()
             });
             farms.0.insert((ci, cj), ent);
         }
@@ -667,6 +644,9 @@ fn sync_actors(
     mut vis: Query<&mut Visibility, With<PlayerRig>>,
     mut last: Local<Option<Vec3>>,
     mut fire: Query<&mut PointLight, With<Campfire>>,
+    mut walk: ResMut<WalkAmount>,
+    mut speed: ResMut<TruckSpeed>,
+    mut last_truck: Local<Option<Vec3>>,
 ) {
     let g = &game.0;
     if let Ok(mut t) = player.single_mut() {
@@ -680,12 +660,18 @@ fn sync_actors(
         let bob = if walking { (time.elapsed_secs() * 12.0).sin().abs() * 0.08 } else { 0.0 };
         t.translation = pos + Vec3::Y * bob;
         *last = Some(pos);
+        let k = 1.0 - (-10.0 * time.delta_secs()).exp();
+        walk.0 += ((if walking { 1.0 } else { 0.0 }) - walk.0) * k;
     }
     if let Ok(mut v) = vis.single_mut() {
         *v = if g.player_visible() { Visibility::Inherited } else { Visibility::Hidden };
     }
     if let Ok(mut t) = truck.single_mut() {
-        t.translation = terrain_view::surface(&g.terrain, g.truck.x, g.truck.y);
+        let pos = terrain_view::surface(&g.terrain, g.truck.x, g.truck.y);
+        let dt = time.delta_secs().max(1e-4);
+        speed.0 = last_truck.map(|l| (pos - l).length() / dt).unwrap_or(0.0).min(40.0);
+        *last_truck = Some(pos);
+        t.translation = pos;
         // local +X -> heading (dx, 0, -dy)  =>  yaw = atan2(dy, dx)
         t.rotation = Quat::from_rotation_y(g.truck.dy.atan2(g.truck.dx));
     }

@@ -12,7 +12,7 @@
 //!
 //! Heights use `VS = 1.25 * S`: the vertical scale is the horizontal scale plus a little drama.
 
-use crate::terrain::{Ground, Terrain, BASE_ELEV, ELEV_MAX};
+use crate::terrain::{contour_segments, Ground, Terrain, BASE_ELEV, CONTOUR_INTERVAL, ELEV_MAX, INDEX_EVERY, WATER_LEVEL};
 use crate::world::CHUNK;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -158,6 +158,8 @@ pub struct ChunkGeo {
     pub cliff: Option<Mesh>,
     pub water: Option<Mesh>,
     pub edge: Option<Mesh>,
+    /// Thin ribbons laid on the relief along every 15 m contour (index contours are heavier).
+    pub contours: Option<Mesh>,
     /// Game positions where a forest tree should stand.
     pub forest: Vec<(f32, f32)>,
 }
@@ -185,7 +187,7 @@ pub fn build_chunk(t: &Terrain, cx: i32, cy: i32) -> ChunkGeo {
         (p, n, uv)
     };
 
-    let (mut grass, mut cliff, mut water, mut edge) = (Buf::default(), Buf::default(), Buf::default(), Buf::default());
+    let (mut grass, mut cliff, mut water, mut edge, mut lines) = (Buf::default(), Buf::default(), Buf::default(), Buf::default(), Buf::default());
     let mut forest = Vec::new();
     let wy = water_y(t);
 
@@ -228,13 +230,59 @@ pub fn build_chunk(t: &Terrain, cx: i32, cy: i32) -> ChunkGeo {
                         water.quad_up(lifted, [1.0; 4]);
                     }
                 }
-                Ground::Cliff => cliff.quad(p, n, uv, [[1.0; 4]; 4]),
+                Ground::Cliff => {
+                    // bedding planes: stripes run along strike and tilt with a gentle dip, so the
+                    // rock reads as layered strata whichever way the face points
+                    let uv = p.map(|v| {
+                        let (wx, wz) = (v.x + ox * S + half * S, v.z - oy * S - half * S);
+                        [wx * 0.8 - wz * 0.6, v.y * 1.0 + 0.3 * (wx * 0.6 + wz * 0.8)]
+                    });
+                    cliff.quad(p, n, uv, [[1.0; 4]; 4])
+                }
                 Ground::Edge => edge.quad(p, n, uv, [[1.0; 4]; 4]),
+            }
+            if ground != Ground::Edge {
+                contour_cell(&mut lines, es, p, avg);
             }
         }
     }
     let opt = |b: Buf| if b.is_empty() { None } else { Some(b.build()) };
-    ChunkGeo { grass: grass.build(), cliff: opt(cliff), water: opt(water), edge: opt(edge), forest }
+    ChunkGeo { grass: grass.build(), cliff: opt(cliff), water: opt(water), edge: opt(edge), contours: opt(lines), forest }
+}
+
+/// 3D contour lines for one cell: marching squares at every 15 m of elevation, drawn as flat
+/// ribbons just above the ground. `es` are the corner elevations (bl, br, tr, tl), `p` the corner
+/// positions in the same order.
+fn contour_cell(out: &mut Buf, es: [f32; 4], p: [Vec3; 4], avg: f32) {
+    let (lo, hi) = es.iter().fold((f32::MAX, f32::MIN), |(a, b), &e| (a.min(e), b.max(e)));
+    if hi < WATER_LEVEL || avg < WATER_LEVEL {
+        return; // lake beds have no contours
+    }
+    let k0 = (lo / CONTOUR_INTERVAL).ceil() as i32;
+    let k1 = (hi / CONTOUR_INTERVAL).floor() as i32;
+    for k in k0..=k1 {
+        let level = k as f32 * CONTOUR_INTERVAL;
+        let index = k % INDEX_EVERY == 0;
+        let (w, colour) = if index { (0.085, [0.16, 0.09, 0.04, 1.0]) } else { (0.04, [0.30, 0.19, 0.10, 1.0]) };
+        let y = (level - BASE_ELEV) * VS + 0.045;
+        // cell coordinates (u along +x, v along +y of the game) onto the corner positions
+        let at = |(u, v): (f32, f32)| {
+            let x = p[0].x + (p[1].x - p[0].x) * u;
+            let z = p[0].z + (p[3].z - p[0].z) * v;
+            Vec3::new(x, y, z)
+        };
+        for (a, b) in contour_segments(es, level) {
+            let (a, b) = (at(a), at(b));
+            let d = (b - a).with_y(0.0);
+            if d.length_squared() < 1e-8 {
+                continue;
+            }
+            let side = Vec3::new(-d.z, 0.0, d.x).normalize() * w / 2.0;
+            // round-ish caps: extend a touch along the line so joins between cells overlap
+            let ext = d.normalize() * w * 0.4;
+            out.quad_up([a - ext - side, b + ext - side, b + ext + side, a - ext + side], colour);
+        }
+    }
 }
 
 // ------------------------------------------------------------ draped surfaces
@@ -298,9 +346,10 @@ pub fn drape_rect(t: &Terrain, r: (f32, f32, f32, f32), lift: f32, colour: [f32;
 }
 
 /// A fenced farm: crop rows plus fence posts and rails, in absolute world coordinates.
-pub fn build_farm(t: &Terrain, r: (f32, f32, f32, f32)) -> Mesh {
+pub fn build_farm(t: &Terrain, r: (f32, f32, f32, f32)) -> (Mesh, Mesh) {
     let (x0, y0, x1, y1) = r;
     let mut b = Buf::default();
+    let mut fence = Buf::default();
     let rows = [[0.50, 0.60, 0.20, 1.0], [0.62, 0.54, 0.22, 1.0]];
     // crop rows
     let (mut y, mut k) = (y0 + 10.0, 0usize);
@@ -311,8 +360,8 @@ pub fn build_farm(t: &Terrain, r: (f32, f32, f32, f32)) -> Mesh {
         k += 1;
     }
     // fence
-    let wood = [0.20, 0.13, 0.07, 1.0];
-    let rail = [0.30, 0.20, 0.11, 1.0];
+    let wood = [0.62, 0.55, 0.50, 1.0];
+    let rail = [0.78, 0.68, 0.58, 1.0];
     let at = |x: f32, y: f32, h: f32| surface(t, x, y) + Vec3::Y * h;
     let mut side = |a: (f32, f32), z: (f32, f32)| {
         let (dx, dy) = (z.0 - a.0, z.1 - a.1);
@@ -320,12 +369,12 @@ pub fn build_farm(t: &Terrain, r: (f32, f32, f32, f32)) -> Mesh {
         for s in 0..=n {
             let f = s as f32 / n as f32;
             let (x, y) = (a.0 + dx * f, a.1 + dy * f);
-            b.beam(at(x, y, -0.05), at(x, y, 1.15), 0.14, 0.14, wood);
+            fence.beam(at(x, y, -0.05), at(x, y, 1.15), 0.14, 0.14, wood);
             if s < n {
                 let g = (s + 1) as f32 / n as f32;
                 let (x2, y2) = (a.0 + dx * g, a.1 + dy * g);
                 for h in [0.55, 0.95] {
-                    b.beam(at(x, y, h), at(x2, y2, h), 0.05, 0.10, rail);
+                    fence.beam(at(x, y, h), at(x2, y2, h), 0.05, 0.10, rail);
                 }
             }
         }
@@ -334,7 +383,7 @@ pub fn build_farm(t: &Terrain, r: (f32, f32, f32, f32)) -> Mesh {
     side((x1, y0), (x1, y1));
     side((x1, y1), (x0, y1));
     side((x0, y1), (x0, y0));
-    b.build()
+    (b.build(), fence.build())
 }
 
 fn append(dst: &mut Buf, src: Buf) {
