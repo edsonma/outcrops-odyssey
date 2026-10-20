@@ -10,3 +10,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --target wasm32-unknown-unknown --locked
+  bevy-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "bevy-prototype -> target" }
+      - run: cargo build --release --locked --target wasm32-unknown-unknown --manifest-path bevy-prototype/Cargo.toml
+
