@@ -763,7 +763,7 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
             if g.level_done { col(190, 240, 170, 240) } else { col(235, 225, 195, 225) }, false);
         if g.phase == Phase::Exploring && !g.terrain.flat {
             let u = g.unit_here();
-            label(a, &format!("Unit: {} ({})", u.name, u.age), 24.0, SCREEN_H - 120.0, -2, false, col(205, 215, 190, 215), false);
+            label(a, &format!("Unit: {} ({})", u.name, u.age), 24.0, SCREEN_H - 196.0, -2, false, col(205, 215, 190, 215), false);
         }
     }
 
