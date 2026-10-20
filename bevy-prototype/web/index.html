@@ -107,7 +107,7 @@
       return new Response(body, { headers: { "Content-Type": "application/wasm" } });
     }
 
-    try {
+    async function main() {
       progress(0.02, "Downloading the game…");
       const { default: init } = await import("./outcrops_bevy.js");
       const wasm = fetchWasm("./outcrops_bevy_bg.wasm");
@@ -131,9 +131,8 @@
       clearTimeout(watchdog);
       progress(0.96, "Loading terrain and textures…");
       requestAnimationFrame(() => requestAnimationFrame(reveal));
-    } catch (e) {
-      fail(e);
     }
+    main().catch(fail);
   </script>
 </body>
 </html>
