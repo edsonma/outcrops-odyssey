@@ -5,6 +5,7 @@
 //! main roads to the drop point -> explore and break outcrops -> reach a main
 //! road before sunset (or lose) -> truck drives back -> sleep -> next morning.
 
+use crate::geology::{Region, REGIONS};
 use crate::kit::*;
 use crate::terrain::{effort_factor, speed_factor, Ground, Terrain};
 use crate::world::*;
@@ -108,9 +109,19 @@ pub struct Card {
     #[allow(dead_code)]
     pub id: String,
     pub name: String,
+    #[allow(dead_code)]
     pub lithology: &'static str,
-    pub mineral: bool,
-    pub fossil: bool,
+    #[allow(dead_code)]
+    pub rock: &'static str,
+    /// Lithostratigraphic unit it came from, and that unit's age.
+    pub unit: &'static str,
+    pub parent: &'static str,
+    pub age: &'static str,
+    #[allow(dead_code)]
+    pub region: &'static str,
+    /// Name of the mineral / fossil found with it, if any.
+    pub mineral: Option<&'static str>,
+    pub fossil: Option<&'static str>,
     pub bonus_rock: bool,
 }
 
@@ -193,6 +204,13 @@ pub struct Game {
     pub visited: HashSet<String>,
     pub rng: Rng,
     pub terrain: Terrain,
+    /// Current map: index into `REGIONS` and the region itself.
+    pub level: usize,
+    pub region: &'static Region,
+    /// The survey quota is met; the next morning moves on to the next map.
+    pub level_done: bool,
+    /// Outcrops surveyed on this map.
+    pub surveyed: u32,
     /// Grade (rise/run) of the last step taken; 0 when standing still.
     pub move_grade: f32,
     block_cooldown: u32,
@@ -200,12 +218,29 @@ pub struct Game {
 }
 
 impl Game {
+    /// A new game on the first map.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(seed: u64) -> Self {
-        Self::with_terrain(seed, Terrain::default())
+        Self::with_level(seed, 0)
     }
 
+    pub fn with_level(seed: u64, level: usize) -> Self {
+        let level = level.min(REGIONS.len() - 1);
+        Self::build(seed, level, REGIONS[level].terrain())
+    }
+
+    /// First map's geology on a custom terrain (tests, experiments).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_terrain(seed: u64, terrain: Terrain) -> Self {
+        Self::build(seed, 0, terrain)
+    }
+
+    fn build(seed: u64, level: usize, terrain: Terrain) -> Self {
         let mut g = Game {
+            level,
+            region: &REGIONS[level],
+            level_done: false,
+            surveyed: 0,
             player: Player { x: CAMP_SPAWN.0, y: CAMP_SPAWN.1, facing: 1 },
             truck: Truck { x: TRUCK_SPOT.0, y: TRUCK_SPOT.1, dx: 1.0, dy: 0.0 },
             phase: Phase::Basecamp,
@@ -294,7 +329,7 @@ impl Game {
             if input.restart_pressed {
                 let seed = self.rng.next_u32() as u64 ^ ((self.tick_count as u64) << 20);
                 let terrain = self.terrain.clone();
-                *self = Game::with_terrain(seed, terrain);
+                *self = Game::build(seed, self.level, terrain);
             }
             self.tick_count += 1;
             return;
@@ -393,6 +428,9 @@ impl Game {
 
     fn start_next_day(&mut self) {
         self.day += 1;
+        if self.level_done {
+            self.advance_level();
+        }
         self.clock_ticks = 0;
         self.energy = ENERGY_MAX;
         self.supply_given = false;
@@ -401,7 +439,12 @@ impl Game {
         self.player.y = CAMP_SPAWN.1;
         self.move_target = None;
         self.phase = Phase::Basecamp;
-        self.set_banner(format!("Day {} - Basecamp", self.day));
+        let banner = if self.surveyed == 0 && self.level > 0 {
+            format!("Day {} - New field area: {} ({})", self.day, self.region.name, self.region.place)
+        } else {
+            format!("Day {} - Basecamp", self.day)
+        };
+        self.set_banner(banner);
     }
 
     fn update_exploring(&mut self) {
@@ -446,8 +489,19 @@ impl Game {
         // Pick today's drop point: somewhere on a vertical main road, clear of the camp.
         let road_k = self.rng.below(3) as i32 - 1; // vertical road index -1..=1 around x=1600
         let xv = ROAD_V_OFFSET + road_k as f32 * ROAD_SPACING;
-        let mag = 900.0 + self.rng.below(1600) as f32;
-        let ty = if self.rng.below(2) == 0 { mag } else { -mag };
+        let ty = match self.terrain.bounds {
+            // bounded map: anywhere along the road inside the map, but not right by the camp
+            Some((_, by0, _, by1)) => {
+                let (lo, hi) = (by0 + 200.0, by1 - 200.0);
+                let (neg, pos) = ((-900.0 - lo).max(0.0), (hi - 900.0).max(0.0));
+                let r = self.rng.below((neg + pos) as u32) as f32;
+                if r < neg { -900.0 - r } else { 900.0 + (r - neg) }
+            }
+            None => {
+                let mag = 900.0 + self.rng.below(1600) as f32;
+                if self.rng.below(2) == 0 { mag } else { -mag }
+            }
+        };
         self.route = route_from_camp(xv, ty);
         self.route_idx = 0;
         self.truck.x = TRUCK_SPOT.0;
@@ -755,7 +809,7 @@ impl Game {
         for dx in -VIEW_RADIUS_CHUNKS..=VIEW_RADIUS_CHUNKS {
             for dy in -VIEW_RADIUS_CHUNKS..=VIEW_RADIUS_CHUNKS {
                 let key = (pcx + dx, pcy + dy);
-                self.chunks.entry(key).or_insert_with(|| generate_chunk(key.0, key.1, &self.terrain));
+                self.chunks.entry(key).or_insert_with(|| generate_chunk(key.0, key.1, &self.terrain, self.region));
             }
         }
     }
@@ -798,16 +852,30 @@ impl Game {
         self.outcrop_points += 10;
         self.xp += 20;
 
-        // GDD: flat 5% independent drop chance per category.
-        let mineral = self.rng.below(100) < 5;
-        let fossil = self.rng.below(100) < 5;
+        // What turns up depends on the unit the outcrop belongs to: ore-bearing
+        // units give minerals more often, only fossiliferous units give fossils.
+        // The bonus rock keeps the flat 5% chance.
+        let region = self.region;
+        let unit = &region.units[o.unit.min(region.units.len() - 1)];
+        let mineral_roll = self.rng.below(100) < unit.mineral_pct;
+        let fossil_roll = self.rng.below(100) < unit.fossil_pct;
         let bonus_roll = self.rng.below(100) < 5;
+        let mineral = if mineral_roll && !unit.minerals.is_empty() {
+            Some(unit.minerals[self.rng.below(unit.minerals.len() as u32) as usize])
+        } else {
+            None
+        };
+        let fossil = if fossil_roll && !unit.fossils.is_empty() {
+            Some(unit.fossils[self.rng.below(unit.fossils.len() as u32) as usize])
+        } else {
+            None
+        };
         let bonus_rock = bonus_roll && self.backpack_used() < BACKPACK_SLOTS;
 
-        if mineral {
+        if mineral.is_some() {
             self.xp += 10;
         }
-        if fossil {
+        if fossil.is_some() {
             self.xp += 10;
         }
         if bonus_rock {
@@ -819,17 +887,23 @@ impl Game {
             id: o.id.clone(),
             name: name.clone(),
             lithology: o.lithology,
+            rock: o.rock,
+            unit: unit.name,
+            parent: unit.parent,
+            age: unit.age,
+            region: region.name,
             mineral,
             fossil,
             bonus_rock,
         });
 
         self.spawn_popup(o.x, o.y + 20.0, &format!("{name}! +10 pts / +20 xp"), (255, 255, 255));
-        if mineral {
-            self.spawn_popup(o.x, o.y + 46.0, "Rare mineral found! +10 xp", (240, 210, 90));
+        self.spawn_popup(o.x, o.y - 6.0, &format!("{} - {}", unit.name, unit.age), (200, 215, 235));
+        if let Some(m) = mineral {
+            self.spawn_popup(o.x, o.y + 46.0, &format!("{m} found! +10 xp"), (240, 210, 90));
         }
-        if fossil {
-            self.spawn_popup(o.x, o.y + 72.0, "Fossil found! +10 xp", (190, 220, 255));
+        if let Some(f) = fossil {
+            self.spawn_popup(o.x, o.y + 72.0, &format!("{f}! +10 xp"), (190, 220, 255));
         }
         if bonus_rock {
             self.spawn_popup(o.x, o.y + 98.0, "Bonus rock collected", (200, 255, 200));
@@ -837,6 +911,32 @@ impl Game {
         if self.pickaxe.wear(rock_hardness(o.lithology)) {
             self.spawn_popup(o.x, o.y + 124.0, "Your pickaxe broke!", (255, 150, 110));
         }
+
+        self.surveyed += 1;
+        if self.surveyed == region.quota && !self.level_done {
+            self.level_done = true;
+            let next = if self.level + 1 < REGIONS.len() { format!("Next field area: {}", REGIONS[self.level + 1].name) } else { "That was the last map!".to_string() };
+            self.set_banner(format!("Survey of {} complete! {}", region.name, next));
+        }
+    }
+
+    /// The mapped geological unit under the player.
+    pub fn unit_here(&self) -> &'static crate::geology::Unit {
+        let i = self.region.unit_at(&self.terrain, self.player.x, self.player.y);
+        &self.region.units[i]
+    }
+
+    /// Move on to the next map (called at the start of a new day).
+    fn advance_level(&mut self) {
+        if self.level + 1 >= REGIONS.len() {
+            return;
+        }
+        self.level += 1;
+        self.region = &REGIONS[self.level];
+        self.terrain = self.region.terrain();
+        self.chunks.clear();
+        self.level_done = false;
+        self.surveyed = 0;
     }
 
     // ------------------------------------------------------------------- kit
@@ -1378,7 +1478,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_never_exceeds_cap_and_drop_rate_is_about_5_percent() {
+    fn inventory_never_exceeds_cap_and_drop_rate_follows_the_unit() {
         let mut g = new_game(42);
         g.player.x = 0.0;
         g.player.y = 0.0;
@@ -1387,14 +1487,15 @@ mod tests {
         for i in 0..n {
             g.visited.clear();
             g.pickaxe.durability = 99; // this test is about drop rates, not tool wear
-            let o = Outcrop { id: format!("t{i}"), x: 0.0, y: 0.0, lithology: "Igneous" };
+            let o = Outcrop::new(&format!("t{i}"), 0.0, 0.0, 3, "Basalt", "Igneous");
             g.chunks.insert((0, 0), Chunk { grass_variant: 0, outcrops: vec![o], trees: vec![], dirt_patches: vec![] });
             g.break_nearest_outcrop();
-            minerals += g.cards.last().unwrap().mineral as u32;
+            minerals += g.cards.last().unwrap().mineral.is_some() as u32;
             assert!(g.backpack_used() <= BACKPACK_SLOTS);
         }
         let rate = minerals as f32 / n as f32;
-        assert!((0.04..0.06).contains(&rate), "rate {rate}");
+        let expect = g.region.units[3].mineral_pct as f32 / 100.0;
+        assert!((expect - 0.015..expect + 0.015).contains(&rate), "rate {rate}, expected about {expect}");
         assert_eq!(g.backpack_used(), BACKPACK_SLOTS, "bonus rocks fill whatever the food leaves free");
     }
 
@@ -1640,7 +1741,7 @@ mod tests {
 
     // ----------------------------------------------------------------- kit
     fn lone_outcrop(g: &mut Game, id: &str, lithology: &'static str) -> Outcrop {
-        let o = Outcrop { id: id.into(), x: 700.0, y: 700.0, lithology };
+        let o = Outcrop::new(id, 700.0, 700.0, 0, "Sandstone", lithology);
         g.player.x = 700.0;
         g.player.y = 700.0;
         g.chunks.insert((1, 1), Chunk { grass_variant: 0, outcrops: vec![o.clone()], trees: vec![], dirt_patches: vec![] });
@@ -1975,7 +2076,7 @@ mod tests {
         g.player.y = 0.0;
         for i in 0..400 {
             g.pickaxe.durability = 99;
-            let o = Outcrop { id: format!("r{i}"), x: 0.0, y: 0.0, lithology: "Igneous" };
+            let o = Outcrop::new(&format!("r{i}"), 0.0, 0.0, 3, "Basalt", "Igneous");
             g.chunks.insert((0, 0), Chunk { grass_variant: 0, outcrops: vec![o], trees: vec![], dirt_patches: vec![] });
             g.break_nearest_outcrop();
         }
@@ -2032,5 +2133,90 @@ mod tests {
         g.phase = Phase::GameOver;
         g.tick(&Input { restart_pressed: true, ..idle() });
         assert_eq!((g.water, g.pickaxe, g.outcrop_points), (WATER_MAX, Pickaxe::new(0), 0));
+    }
+
+    // ------------------------------------------------------------ level maps
+    fn outcrop_here(g: &mut Game, id: &str) -> Outcrop {
+        let o = Outcrop::new(id, 0.0, 0.0, 0, "Sandstone", "Sedimentary");
+        g.player.x = 0.0;
+        g.player.y = 0.0;
+        g.pickaxe.durability = 99;
+        g.chunks.insert((0, 0), Chunk { grass_variant: 0, outcrops: vec![o.clone()], trees: vec![], dirt_patches: vec![] });
+        o
+    }
+
+    #[test]
+    fn levels_are_bounded_regional_maps() {
+        for l in 0..REGIONS.len() {
+            let g = Game::with_level(7, l);
+            assert_eq!(g.level, l);
+            assert_eq!(g.region.id, REGIONS[l].id);
+            let (x0, y0, x1, y1) = g.terrain.bounds.expect("each level map is bounded");
+            assert_eq!(g.terrain.ground(x1 + 500.0, 0.0), Ground::Edge);
+            assert_eq!(g.terrain.ground(0.0, y0 - 500.0), Ground::Edge);
+            assert!(x0 < 0.0 && y0 < 0.0 && x1 > 0.0 && y1 > 0.0);
+        }
+    }
+
+    #[test]
+    fn meeting_the_quota_unlocks_the_next_map_the_following_morning() {
+        let mut g = new_game(3);
+        g.phase = Phase::Exploring;
+        let quota = g.region.quota;
+        g.surveyed = quota - 1;
+        let o = outcrop_here(&mut g, "paraná:q");
+        g.break_outcrop(&o);
+        assert!(g.level_done && g.surveyed == quota);
+        assert_eq!(g.level, 0, "the map does not change mid-day");
+        g.start_next_day();
+        assert_eq!((g.level, g.surveyed, g.level_done), (1, 0, false));
+        assert_eq!(g.region.id, REGIONS[1].id);
+        assert!(g.chunks.is_empty(), "old map's chunks are dropped");
+        assert_eq!(g.phase, Phase::Basecamp);
+    }
+
+    #[test]
+    fn without_a_quota_the_same_map_continues() {
+        let mut g = new_game(3);
+        g.surveyed = g.region.quota - 1;
+        g.start_next_day();
+        assert_eq!((g.level, g.surveyed), (0, g.region.quota - 1));
+    }
+
+    #[test]
+    fn the_last_map_is_the_last() {
+        let mut g = Game::with_level(3, REGIONS.len() - 1);
+        g.level_done = true;
+        g.start_next_day();
+        assert_eq!(g.level, REGIONS.len() - 1);
+    }
+
+    #[test]
+    fn finds_come_from_the_outcrops_own_unit() {
+        let mut g = Game::with_level(11, 1); // Araripe: the Crato Formation is the fossil unit
+        g.phase = Phase::Exploring;
+        let crato = g.region.units.iter().position(|u| u.name == "Crato Formation").unwrap();
+        let (mut fossils, n) = (0, 6000);
+        for i in 0..n {
+            g.visited.clear();
+            let mut o = outcrop_here(&mut g, &format!("c{i}"));
+            o.unit = crato;
+            g.chunks.insert((0, 0), Chunk { grass_variant: 0, outcrops: vec![o], trees: vec![], dirt_patches: vec![] });
+            g.break_nearest_outcrop();
+            let c = g.cards.last().unwrap();
+            assert_eq!(c.unit, "Crato Formation");
+            if let Some(f) = c.fossil {
+                assert!(g.region.units[crato].fossils.contains(&f));
+                fossils += 1;
+            }
+            if let Some(m) = c.mineral {
+                assert!(g.region.units[crato].minerals.contains(&m));
+            }
+            g.cards.clear();
+            g.inventory_count = 0;
+        }
+        let expect = g.region.units[crato].fossil_pct as f32 / 100.0;
+        let rate = fossils as f32 / n as f32;
+        assert!((rate - expect).abs() < 0.03, "fossil rate {rate}, expected {expect}");
     }
 }

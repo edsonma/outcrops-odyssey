@@ -32,11 +32,13 @@ pub enum Ground {
     Farm,
     Forest,
     Cliff,
+    /// Outside the surveyed map rectangle.
+    Edge,
 }
 
 impl Ground {
     pub fn blocked(self) -> bool {
-        matches!(self, Ground::Lake | Ground::Farm | Ground::Forest | Ground::Cliff)
+        matches!(self, Ground::Lake | Ground::Farm | Ground::Forest | Ground::Cliff | Ground::Edge)
     }
     pub fn is_water(self) -> bool {
         matches!(self, Ground::Lake | Ground::River)
@@ -51,6 +53,7 @@ impl Ground {
             Ground::Farm => "Fenced farm - private property",
             Ground::Forest => "Dense forest - impassable",
             Ground::Cliff => "Too steep to climb",
+            Ground::Edge => "Edge of the survey area",
             _ => "",
         }
     }
@@ -87,11 +90,15 @@ pub struct Terrain {
     pub farm_pct: u32,
     /// Forest noise threshold; lower means more dense forest.
     pub forest_threshold: f32,
+    /// Half-width of the river band in noise units (bigger = wider rivers).
+    pub river_band: f32,
+    /// Playable rectangle (x0, y0, x1, y1); beyond it is `Ground::Edge`.
+    pub bounds: Option<(f32, f32, f32, f32)>,
 }
 
 impl Default for Terrain {
     fn default() -> Self {
-        Terrain { seed: 0x0DDC_0FFE, flat: false, relief: 1.0, water_level: WATER_LEVEL, farm_pct: 90, forest_threshold: 0.60 }
+        Terrain { seed: 0x0DDC_0FFE, flat: false, relief: 1.0, water_level: WATER_LEVEL, farm_pct: 90, forest_threshold: 0.60, river_band: 0.010, bounds: None }
     }
 }
 
@@ -125,7 +132,7 @@ fn value_noise(seed: u32, x: f32, y: f32) -> f32 {
 }
 
 /// Fractal noise in 0..1 (centred on 0.5).
-fn fbm(seed: u32, x: f32, y: f32, octaves: u32) -> f32 {
+pub fn fbm(seed: u32, x: f32, y: f32, octaves: u32) -> f32 {
     let (mut sum, mut amp, mut norm, mut freq) = (0.0, 1.0, 0.0, 1.0);
     for o in 0..octaves {
         sum += amp * value_noise(seed.wrapping_add(o * 977), x * freq, y * freq);
@@ -197,7 +204,7 @@ impl Terrain {
 
     fn river_at(&self, x: f32, y: f32) -> bool {
         let n = fbm(self.seed ^ 0xA11C_E5ED, x / 1300.0, y / 1300.0, 2);
-        (n - 0.5).abs() < 0.010
+        (n - 0.5).abs() < self.river_band
     }
 
     fn forest_noise(&self, x: f32, y: f32) -> f32 {
@@ -240,7 +247,15 @@ impl Terrain {
         self.farm_rect(ci, cj).is_some_and(|(x0, y0, x1, y1)| x >= x0 && x <= x1 && y >= y0 && y <= y1)
     }
 
+    /// True beyond the playable rectangle (always false for unbounded terrain).
+    pub fn outside(&self, x: f32, y: f32) -> bool {
+        self.bounds.is_some_and(|(x0, y0, x1, y1)| x < x0 || x > x1 || y < y0 || y > y1)
+    }
+
     pub fn ground(&self, x: f32, y: f32) -> Ground {
+        if self.outside(x, y) {
+            return Ground::Edge;
+        }
         if self.flat || clear_distance(x, y) < CLEAR_RADIUS {
             return Ground::Open;
         }
@@ -252,6 +267,9 @@ impl Terrain {
     /// Ground type from an already-known elevation and steepness at (x, y).
     /// Lets the renderer classify a whole grid from one elevation sample each.
     pub fn classify(&self, x: f32, y: f32, e: f32, steep: f32) -> Ground {
+        if self.outside(x, y) {
+            return Ground::Edge;
+        }
         if self.flat || clear_distance(x, y) < CLEAR_RADIUS {
             return Ground::Open;
         }
@@ -498,6 +516,7 @@ mod tests {
                     Ground::Farm => c = [200, 180, 80],
                     Ground::Forest => c = [20, 70, 30],
                     Ground::Cliff => c = [130, 120, 110],
+                    Ground::Edge => c = [10, 10, 10],
                     Ground::Open => {}
                 }
                 let k = (e / CONTOUR_INTERVAL).floor();

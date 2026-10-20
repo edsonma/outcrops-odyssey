@@ -1,4 +1,5 @@
 mod game;
+mod geology;
 mod kit;
 mod terrain;
 mod touch;
@@ -7,6 +8,7 @@ mod world;
 use game::*;
 use macroquad::prelude::*;
 use std::collections::{HashMap, HashSet};
+use geology::REGIONS;
 use terrain::*;
 use touch::{Tap, TouchState};
 use world::*;
@@ -267,6 +269,13 @@ fn render_terrain(g: &Game, a: &Assets) {
                     }
                 }
                 Ground::River => solid(sx, sy, S, S, col(88, 154, 210, 225)),
+                Ground::Edge => {
+                    // beyond the survey area: dark, with a faint hatch
+                    solid(sx, sy, S, S, col(10, 12, 10, 240));
+                    if (i + j).rem_euclid(2) == 0 {
+                        solid(sx, sy + 10.0, S, 3.0, col(60, 60, 50, 140));
+                    }
+                }
                 Ground::Cliff => {
                     solid(sx, sy, S, S, col(110, 102, 94, 235));
                     if tiny_hash(gx0 + i, gy0 + j) > 0.6 {
@@ -361,7 +370,8 @@ fn render_terrain(g: &Game, a: &Assets) {
     }
 }
 
-/// Terrain for the map overlay: only chunks you have explored are revealed.
+/// The geological map: unit colours shaded by relief, contours, water, forest and
+/// cliffs. Only chunks you have explored are revealed.
 fn render_map_terrain(g: &Game, ox: f32, oy: f32, wmin_x: f32, wmin_y: f32, world_w: f32, world_h: f32, scale: f32) {
     let t = &g.terrain;
     if t.flat {
@@ -381,20 +391,34 @@ fn render_map_terrain(g: &Game, ox: f32, oy: f32, wmin_x: f32, wmin_y: f32, worl
     for j in 0..ny {
         for i in 0..nx {
             let (wx, wy) = (wmin_x + i as f32 * cell, wmin_y + j as f32 * cell);
-            if !g.chunks.contains_key(&world_to_chunk(wx + cell / 2.0, wy + cell / 2.0)) {
+            let (mx, my) = (wx + cell / 2.0, wy + cell / 2.0);
+            if !g.chunks.contains_key(&world_to_chunk(mx, my)) {
                 continue;
             }
             let (e00, e10, e11, e01) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
             let avg = (e00 + e10 + e11 + e01) / 4.0;
             let steep = (((e10 + e11 - e00 - e01) / 2.0) / cell).hypot(((e01 + e11 - e00 - e10) / 2.0) / cell);
-            let ground = t.classify(wx + cell / 2.0, wy + cell / 2.0, avg, steep);
+            let ground = t.classify(mx, my, avg, steep);
             let (r, gr, b) = match ground {
-                Ground::Open => elev_rgb(avg),
-                Ground::Farm => (190, 176, 92),
+                Ground::Open | Ground::Farm => {
+                    let unit = g.region.unit_at_elev(t, mx, my, avg);
+                    let (ur, ug, ub) = g.region.units[unit].color;
+                    // relief shading, light from the north-west
+                    let dzdx = ((e10 + e11) - (e00 + e01)) / 2.0 / cell;
+                    let dzdy = ((e01 + e11) - (e00 + e10)) / 2.0 / cell;
+                    let k = 1.0 + ((-dzdx + dzdy) * 1.4).clamp(-0.35, 0.35);
+                    let f = |c: u8| (c as f32 * k).clamp(0.0, 255.0) as u8;
+                    if ground == Ground::Farm { (lerp_rgb((f(ur), f(ug), f(ub)), (230, 215, 120), 0.45)).into() } else { (f(ur), f(ug), f(ub)) }
+                }
                 Ground::Lake => (58, 118, 188),
                 Ground::River => (110, 172, 222),
-                Ground::Forest => (30, 86, 46),
+                Ground::Forest => {
+                    let unit = g.region.unit_at_elev(t, mx, my, avg);
+                    let (ur, ug, ub) = g.region.units[unit].color;
+                    lerp_rgb((ur, ug, ub), (24, 78, 40), 0.72) // forest hides the rock: only a hint of the unit shows
+                }
                 Ground::Cliff => (126, 118, 110),
+                Ground::Edge => continue,
             };
             solid(ox + i as f32 * PX, oy + j as f32 * PX, PX + 0.5, PX + 0.5, col(r, gr, b, 255));
             if ground.is_water() {
@@ -407,10 +431,30 @@ fn render_map_terrain(g: &Game, ox: f32, oy: f32, wmin_x: f32, wmin_y: f32, worl
                 for ((ax, ay), (bx, by)) in contour_segments(v, k as f32 * step) {
                     let (x1, y1) = (ox + (i as f32 + ax) * PX, SCREEN_H - (oy + (j as f32 + ay) * PX));
                     let (x2, y2) = (ox + (i as f32 + bx) * PX, SCREEN_H - (oy + (j as f32 + by) * PX));
-                    draw_line(x1, y1, x2, y2, 1.2, col(70, 44, 22, 170));
+                    draw_line(x1, y1, x2, y2, 1.0, col(40, 28, 16, 150));
                 }
             }
         }
+    }
+}
+
+/// Map legend: every unit of the region, oldest listed first, with its age.
+fn render_map_legend(g: &Game, a: &Assets, x: f32, top: f32) {
+    label(a, g.region.name, x, top, 0, false, col(255, 240, 200, 240), true);
+    label(a, &format!("{}  -  level {}/{}", g.region.place, g.level + 1, REGIONS.len()), x, top - 24.0, -2, false, col(200, 200, 190, 210), false);
+    let mut y = top - 56.0;
+    for u in g.region.units {
+        solid(x, y - 22.0, 16.0, 16.0, col(u.color.0, u.color.1, u.color.2, 255));
+        border(x, y - 22.0, 16.0, 16.0, col(255, 255, 255, 90));
+        label(a, u.name, x + 24.0, y, -2, false, col(235, 232, 220, 235), false);
+        label(a, u.age, x + 24.0, y - 18.0, -3, false, col(170, 175, 165, 210), false);
+        y -= 40.0;
+    }
+    y -= 6.0;
+    for (c, text) in [((58u8, 118u8, 188u8), "Water"), ((24, 78, 40), "Dense forest"), ((126, 118, 110), "Cliffs"), ((230, 215, 120), "Farm")] {
+        solid(x, y - 16.0, 14.0, 14.0, col(c.0, c.1, c.2, 255));
+        label(a, text, x + 24.0, y, -2, false, col(215, 215, 205, 220), false);
+        y -= 22.0;
     }
 }
 
@@ -565,17 +609,27 @@ fn panel_frame(a: &Assets, title: &str) {
 
 fn render_map_overlay(g: &Game, a: &Assets) {
     let (px, py, pw, ph) = PANEL;
-    panel_frame(a, "MAP");
+    panel_frame(a, &format!("MAP - {}", g.region.name));
     if !g.chunks.is_empty() {
-        let min_cx = g.chunks.keys().map(|k| k.0).min().unwrap();
-        let max_cx = g.chunks.keys().map(|k| k.0).max().unwrap();
-        let min_cy = g.chunks.keys().map(|k| k.1).min().unwrap();
-        let max_cy = g.chunks.keys().map(|k| k.1).max().unwrap();
-        let (wmin_x, wmin_y) = ((min_cx * CHUNK) as f32, (min_cy * CHUNK) as f32);
-        let world_w = (((max_cx + 1) * CHUNK) as f32 - wmin_x).max(1.0);
-        let world_h = (((max_cy + 1) * CHUNK) as f32 - wmin_y).max(1.0);
         let margin = 30.0;
-        let scale = ((pw - margin * 2.0) / world_w).min((ph - margin * 2.0) / world_h);
+        // bounded maps show the whole survey area (unexplored parts stay dark)
+        let (wmin_x, wmin_y, world_w, world_h, legend_w) = match g.terrain.bounds {
+            Some((x0, y0, x1, y1)) => (x0, y0, x1 - x0, y1 - y0, 300.0),
+            None => {
+                let min_cx = g.chunks.keys().map(|k| k.0).min().unwrap();
+                let max_cx = g.chunks.keys().map(|k| k.0).max().unwrap();
+                let min_cy = g.chunks.keys().map(|k| k.1).min().unwrap();
+                let max_cy = g.chunks.keys().map(|k| k.1).max().unwrap();
+                let (wx, wy) = ((min_cx * CHUNK) as f32, (min_cy * CHUNK) as f32);
+                (wx, wy, (((max_cx + 1) * CHUNK) as f32 - wx).max(1.0), (((max_cy + 1) * CHUNK) as f32 - wy).max(1.0), 0.0)
+            }
+        };
+        let scale = ((pw - margin * 2.0 - legend_w) / world_w).min((ph - margin * 2.0) / world_h);
+        if legend_w > 0.0 {
+            solid(px + margin - 3.0, py + margin - 3.0, world_w * scale + 6.0, world_h * scale + 6.0, col(60, 54, 44, 255));
+            solid(px + margin, py + margin, world_w * scale, world_h * scale, col(14, 16, 12, 255));
+            render_map_legend(g, a, px + margin + world_w * scale + 22.0, py + ph - 50.0);
+        }
 
         render_map_terrain(g, px + margin, py + margin, wmin_x, wmin_y, world_w, world_h, scale);
 
@@ -612,7 +666,7 @@ fn render_map_overlay(g: &Game, a: &Assets) {
     }
     label(a, "Yellow = raw   Green = visited   Red = you   Blue sq = basecamp   Gray lines = main roads   .   M to close",
         px + pw / 2.0, py - 14.0, -1, true, col(220, 220, 220, 200), false);
-    label(a, "Brown lines = contours (every 75 m)   Blue = water   Dark green = dense forest   Gray = cliffs   Tan = farm",
+    label(a, "Colours = geological units (see legend)   Brown lines = contours every 75 m   Dark = not yet explored",
         px + pw / 2.0, py - 36.0, -1, true, col(200, 205, 200, 190), false);
 }
 
@@ -626,14 +680,14 @@ fn render_cards_overlay(g: &Game, a: &Assets) {
     }
     let mut row_y = py + ph - 60.0;
     for (i, c) in page.iter().enumerate() {
-        let mut badges = Vec::new();
-        if c.mineral { badges.push("MINERAL"); }
-        if c.fossil { badges.push("FOSSIL"); }
-        if c.bonus_rock { badges.push("ROCK"); }
-        let badge_text = if badges.is_empty() { String::new() } else { format!("  [{}]", badges.join(", ")) };
+        let mut badges: Vec<String> = Vec::new();
+        if let Some(m) = c.mineral { badges.push(m.to_string()); }
+        if let Some(f) = c.fossil { badges.push(f.to_string()); }
+        if c.bonus_rock { badges.push("Bonus rock".to_string()); }
+        let badge_text = if badges.is_empty() { String::new() } else { format!("   [{}]", badges.join(", ")) };
         solid(px + 24.0, row_y - 12.0, pw - 48.0, 50.0, col(40, 35, 27, if i % 2 == 0 { 130 } else { 60 }));
-        label(a, &format!("{}. {}", start + i + 1, c.name), px + 40.0, row_y + 34.0, 1, false, col(240, 235, 218, 235), false);
-        label(a, &format!("{}{}", c.lithology, badge_text), px + 40.0, row_y + 8.0, -1, false, col(190, 195, 175, 210), false);
+        label(a, &format!("{}. {}{}", start + i + 1, c.name, badge_text), px + 40.0, row_y + 38.0, 0, false, col(240, 235, 218, 235), false);
+        label(a, &format!("{} - {} ({}) - {}", c.lithology, c.unit, c.parent, c.age), px + 40.0, row_y + 13.0, -3, false, col(180, 190, 170, 215), false);
         row_y -= 58.0;
     }
     label(a, &format!("Page {}/{}   .   Up/Down to page   .   Press C to close", g.card_page + 1, g.total_card_pages()),
@@ -700,6 +754,17 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
         let pk = &g.pickaxe;
         let pc = if pk.broken() { col(255, 140, 110, 240) } else if pk.durability * 4 <= pk.max_durability() { col(255, 210, 130, 230) } else { col(220, 220, 220, 210) };
         label(a, &format!("Pickaxe {} {}/{}   Food: {} apple, {} sandwich", pk.name(), pk.durability, pk.max_durability(), g.apples, g.sandwiches), 24.0, SCREEN_H - 156.0, -1, false, pc, false);
+    }
+
+    // field area, survey progress and the unit under your boots
+    if matches!(g.phase, Phase::Exploring | Phase::Basecamp) {
+        let q = g.region.quota;
+        label(a, &format!("{}  (map {}/{})   Survey {}/{}", g.region.name, g.level + 1, REGIONS.len(), g.surveyed.min(q), q), 24.0, SCREEN_H - 176.0, -1, false,
+            if g.level_done { col(190, 240, 170, 240) } else { col(235, 225, 195, 225) }, false);
+        if g.phase == Phase::Exploring && !g.terrain.flat {
+            let u = g.unit_here();
+            label(a, &format!("Unit: {} ({})", u.name, u.age), 24.0, SCREEN_H - 120.0, -2, false, col(205, 215, 190, 215), false);
+        }
     }
 
     // clock
@@ -801,6 +866,10 @@ fn render_phase_overlays(g: &Game, a: &Assets) {
             label(a, &format!("Day {} complete", g.day), SCREEN_W / 2.0, SCREEN_H / 2.0 + 50.0, 6, true, col(255, 255, 255, alpha), true);
             label(a, &format!("{} points   {} cards   Resting to restore energy...", g.outcrop_points, g.cards.len()),
                 SCREEN_W / 2.0, SCREEN_H / 2.0 - 10.0, 1, true, col(210, 215, 235, alpha), false);
+            if g.level_done && g.level + 1 < REGIONS.len() {
+                label(a, &format!("Tomorrow: a new field area - {}", REGIONS[g.level + 1].name),
+                    SCREEN_W / 2.0, SCREEN_H / 2.0 - 56.0, 1, true, col(190, 240, 170, alpha), false);
+            }
         }
         Phase::GameOver => {
             solid(0.0, 0.0, SCREEN_W, SCREEN_H, col(5, 5, 14, 225));
@@ -817,7 +886,7 @@ fn render_phase_overlays(g: &Game, a: &Assets) {
 }
 
 /// Debug-builds only: OO_DEMO=<scene> scripts a state for screenshots.
-/// scenes: camp | ride | field | road | map | cards | sunset | over | sleep | lake | hills | pack | shop
+/// scenes: fullmap | camp | ride | field | road | map | cards | sunset | over | sleep | lake | hills | pack | shop
 #[cfg(debug_assertions)]
 fn debug_demo(g: &mut Game, frame: u32, pending: &mut Input) {
     let Ok(mode) = std::env::var("OO_DEMO") else { return };
@@ -864,6 +933,17 @@ fn debug_demo(g: &mut Game, frame: u32, pending: &mut Input) {
                 to_field(g);
                 g.clock_ticks = (12 * 60 + 40) * TICKS_PER_MINUTE;
                 g.player.x += 500.0;
+            }
+            "fullmap" => {
+                to_field(g);
+                break_some(g);
+                // reveal the whole survey area so every unit shows on the map
+                for cx in -5..5 {
+                    for cy in -5..5 {
+                        let ch = world::generate_chunk(cx, cy, &g.terrain, g.region);
+                        g.chunks.entry((cx, cy)).or_insert(ch);
+                    }
+                }
             }
             "map" | "cards" => {
                 to_field(g);
@@ -921,7 +1001,7 @@ fn debug_demo(g: &mut Game, frame: u32, pending: &mut Input) {
     }
     if frame == 20 {
         match mode.as_str() {
-            "map" => pending.map_pressed = true,
+            "map" | "fullmap" => pending.map_pressed = true,
             "cards" => pending.cards_pressed = true,
             "pack" | "shop" => pending.pack_pressed = true,
             _ => {}
@@ -942,7 +1022,11 @@ async fn main() {
     target.texture.set_filter(FilterMode::Linear);
 
     let seed = (macroquad::miniquad::date::now() * 1000.0) as u64 ^ 0x9E37_79B9_7F4A_7C15;
-    let mut game = Game::new(seed);
+    #[cfg(debug_assertions)]
+    let level = std::env::var("OO_LEVEL").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+    #[cfg(not(debug_assertions))]
+    let level = 0;
+    let mut game = Game::with_level(seed, level);
     game.ensure_nearby_chunks_generated();
 
     let mut pending = Input::default(); // edge-triggered input collected between ticks

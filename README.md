@@ -16,6 +16,8 @@ The full design lives in `Outcrops_Odyssey_GDD.docx`.
 | Break an outcrop | SPACE, or click it | Tap it (walks over first if far), or the **BREAK** button |
 | Board / call the truck | **E** (or click the truck) | Tap the truck, or **BOARD** / **TRUCK** |
 | Map / cards | **M** / **C** (Up/Down pages) | **MAP** / **CARDS** buttons |
+| Backpack & shop | **B** (Up/Down, ENTER to use) | **PACK** button |
+| Fill bottle / eat (context) | **F** | **FILL** / **EAT** button |
 | Restart after game over | ENTER | Tap |
 
 The touch controls appear automatically on touch devices. The page blocks zoom and scrolling,
@@ -24,30 +26,71 @@ API) use Share → Add to Home Screen.
 
 ## The daily loop
 
-1. Wake at the **basecamp**, walk to the truck parked on the road below camp, and board it.
-2. The truck drives along the **main roads** (a world-wide grid) to today's random drop point.
-3. Explore and break outcrops. Field time runs **05:00 → 18:00**; supplies arrive at **12:00**
-   (+50 energy). Walking drains energy; at 0 you move at half speed.
+1. Wake at the **basecamp** with a **full water bottle** and one apple or sandwich, walk to the truck
+   on the road below camp, and board it.
+2. The truck drives along the **main roads** to today's random drop point on the current map.
+3. Explore and break outcrops. Field time runs **05:00 → 18:00**. Walking drains energy (more uphill,
+   less downhill), and so does thirst. At 0 energy you move at half speed.
 4. Stand on a main road and call the truck, or be on a road at sunset (automatic pickup).
    **Miss the road at 18:00 and it's game over.**
-5. The truck drives back, you sleep (energy restored), and the next day begins. Cards, points and
-   visited outcrops carry over.
+5. Back at camp you sleep (energy restored), and the next day begins. Cards, points and visited
+   outcrops carry over. Once you have surveyed a map's **quota** of outcrops, the *next morning* you
+   are taken to a new field area.
+
+## Terrain
+
+Every map has a topographic relief (0–300 m) drawn with hypsometric tint, hillshading and
+**contour lines** (index contours every 75 m are labelled). Going **up** slows you and costs more
+energy; going **down** is faster and cheaper. The HUD shows elevation and slope. Blocked areas:
+**lakes**, **cliffs / very high mountains**, **dense forest** and **fenced farms** (rivers can be
+waded, slowly). Maps are **bounded**: past the edge is the dark "edge of the survey area".
+
+## Geology: one region per level
+
+Each level is a hand-authored, bounded map of a Brazilian geological region. Outcrops only appear
+where the rock is exposed (not in lakes, forest, farms) and every outcrop belongs to the
+lithostratigraphic unit mapped at its location, so rocks, minerals and fossils match the region
+(no Crato fossil fish in Carajás). The structure follows the geology: flat strata where older
+units crop out lower, folded belts, or concentric rings around an intrusion.
+
+| Level | Region | Units (examples) | Quota |
+|---|---|---|---|
+| 1 | Bacia do Paraná | Itararé Group, Irati Fm., Botucatu Fm., Serra Geral Fm. | 25 |
+| 2 | Bacia do Araripe | Rio da Batateira, Crato, Ipubi, Romualdo, Exu formations | 25 |
+| 3 | Quadrilátero Ferrífero | Basement gneiss, Nova Lima, Moeda, Batatal, Cauê, Gandarela, Cercadinho | 30 |
+| 4 | Maciço de Poços de Caldas | Nepheline syenite, alkaline volcanics, basement, bauxite cover | 30 |
+| 5 | Serra dos Carajás | Xingu Complex, granite, iron formation, canga | 35 |
+
+The map screen (**M**) is a geological map: unit colours shaded by relief, with a legend giving
+each unit and its age. Cards show the rock, unit, group and age plus any mineral or fossil found.
+
+> **Data note:** the units, ages and mineral/fossil lists are compiled from published literature
+> (SGB/CPRM, SciELO, university papers) and simplified for gameplay. Ages are rounded and
+> approximate; verify against the [GeoSGB portal](https://geosgb.sgb.gov.br) before using them for
+> anything but the game. The maps are authored, not imported from SGB shapefiles.
+
+## The kit
+
+- **Water bottle** (100): drains slowly, faster when walking. Fill at a lake or river (**F** /
+  FILL) within reach. An empty bottle makes you slower and more tiring.
+- **Pickaxe** with durability: rocks wear it (igneous/metamorphic twice as much). A broken pickaxe
+  is replaced from the backpack menu for points (the next morning you always get a free basic one).
+  **Upgrade** it at basecamp (Reinforced / Hardened / Tungsten).
+- **Food**: buy apples (+20 energy) and sandwiches (+40) with points in the backpack menu. Eat
+  only in the shade near a tree (or at camp); each morning you get one free piece of food.
+- **Backpack**: 12 slots shared by food and bonus rocks.
 
 ## What's implemented (from the GDD)
 
-- **Infinite world**: generated in 640-unit chunks around you. Each chunk is derived from its
-  coordinates by a hash, so coming back always gives the same field (works in all directions,
-  including negative coordinates).
-- **Outcrops**: the first break awards 10 points + 20 XP and marks the outcrop *visited* (it stays
-  in the world; raw ones sparkle). Each first break rolls the GDD's flat **5%** independent chance
-  for a rare mineral, a fossil and a bonus rock (+10 XP for mineral/fossil); bonus rocks fill a
-  **10-slot inventory**.
-- **Cards**: every break creates a named card (adjective + lithology) with mineral / fossil / rock
-  badges, browsable in the card viewer.
-- **Map**: every explored chunk, raw vs. visited outcrops, main roads, basecamp and you.
-- **Basecamp, main roads and truck** with road-following truck routes, a field clock, noon supplies,
-  energy, a "nearest road" compass and a sunset warning.
-- Nothing spawns on roads or inside the camp.
+- **Deterministic world** in 640-unit chunks derived from coordinates by a hash.
+- **Outcrops**: the first break awards 10 points + 20 XP and marks the outcrop *visited*. The
+  chance of a mineral or a fossil depends on the unit (see `src/geology.rs`); bonus rocks stay a
+  flat 5%.
+- **Cards**, **map**, **basecamp / roads / truck**, field clock, energy, "nearest road" compass and
+  sunset warning.
+
+> Differences from the original design: there is no free noon energy any more (food replaces it),
+> and the worlds are no longer identical to the Ruby prototype's.
 
 ## Not built yet
 
@@ -60,7 +103,10 @@ API) use Share → Add to Home Screen.
 ## Project layout
 
 ```
-src/world.rs      deterministic chunk generation, roads, basecamp, truck routing
+src/world.rs      deterministic chunk generation (region-aware), roads, basecamp, truck routing
+src/terrain.rs    elevation, slopes, contours, lakes / rivers / forest / farms / cliffs
+src/geology.rs    the five Brazilian regions: units, structure, minerals, fossils
+src/kit.rs        water bottle, pickaxe tiers, food, backpack menu data
 src/game.rs       rules and state machine (Basecamp → TruckOut → Exploring → TruckBack → Sleeping / GameOver)
 src/touch.rs      on-screen buttons and virtual stick (pure logic)
 src/main.rs       window, fixed 60 Hz loop, input, drawing, letterboxed 1280×720 screen
@@ -73,9 +119,9 @@ railway.json      Railway config (Dockerfile build, /healthz health check)
 project/          the original DragonRuby prototype, kept for reference only
 ```
 
-`game.rs`, `world.rs` and `touch.rs` contain no rendering or window code, so the whole game loop
-is covered by headless unit tests (`cargo test`, 34 tests): chunk determinism, drop rates,
-inventory cap, truck routes staying on roads, sunset game over, the full day loop, tap
+`game.rs`, `world.rs`, `terrain.rs`, `geology.rs`, `kit.rs` and `touch.rs` contain no rendering or window code, so the whole game loop
+is covered by headless unit tests (`cargo test`, ~90 tests): chunk determinism, unit-based drop rates,
+backpack cap, terrain rules, level progression, truck routes staying on roads, sunset game over, the full day loop, tap
 interactions and touch routing.
 
 ## Run it
