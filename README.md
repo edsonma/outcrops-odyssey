@@ -8,6 +8,18 @@ on desktop and on phones.
 
 The full design lives in `Outcrops_Odyssey_GDD.docx`.
 
+## Screenshots
+
+Captured from the Bevy 3D build (headless, software-rendered).
+
+| Basecamp: cabins, crates, tent, campfire | The vintage pickup on a winding road |
+|---|---|
+| ![Basecamp](docs/screenshots/camp.jpg) | ![Truck on the road](docs/screenshots/road-truck.jpg) |
+
+| Fenced farm, river and contour lines | Backpack and camp store |
+|---|---|
+| ![Farm](docs/screenshots/farm.jpg) | ![Backpack](docs/screenshots/backpack.jpg) |
+
 ## Play
 
 | | Desktop | Phone / tablet (landscape) |

@@ -137,7 +137,7 @@ pub fn setup_kit_ui(mut commands: Commands) {
                 root.spawn((what, n, Text::new(""), font(size), TextColor(Color::WHITE)));
             };
             text(root, PackText::Title, 30.0, px + 28.0, py + ph - 62.0, pw - 56.0);
-            text(root, PackText::Status, 20.0, px + 28.0, py + ph - 100.0, pw - 56.0);
+            text(root, PackText::Status, 18.0, px + 500.0, py + ph - 56.0, pw - 520.0); // same line as the title, clear of the rows
             for i in 0..kit::ACTIONS.len() {
                 let (rx, ry, rw, rh) = pack_row_rect(i);
                 root.spawn((PackRowBg(i), virt(rx, ry, rw, rh), BackgroundColor(Color::NONE)));
@@ -192,7 +192,7 @@ pub fn update_kit_ui(
                 color.0 = Color::srgb(0.97, 0.88, 0.60);
             }
             PackText::Status => {
-                text.0 = format!("Points: {}     Pack {}/{} slots (food + bonus rocks)", g.outcrop_points, g.backpack_used(), kit::BACKPACK_SLOTS);
+                text.0 = format!("Points: {}    Pack {}/{} slots", g.outcrop_points, g.backpack_used(), kit::BACKPACK_SLOTS);
                 color.0 = Color::srgb(1.0, 0.94, 0.78);
             }
             PackText::Msg => {
