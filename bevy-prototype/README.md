@@ -49,13 +49,12 @@ cd .. ; set -x STATIC_DIR public3d ; node server.js          # http://localhost:
 
 Optional size win: `wasm-opt -Oz` (binaryen) on `outcrops_bevy_bg.wasm`.
 
-## Deploy to Railway (second service)
+## Deploy to Railway
 
-The Macroquad game keeps its service. Add another service from the **same repo** and set
-*Settings → Build → Dockerfile path* to `bevy-prototype/Dockerfile` (root directory stays the
-repo root; the build needs `../src`). The Docker build compiles the wasm, runs `wasm-bindgen`,
-and serves it with the repo's `server.js`. Expect a long first build (Bevy + wasm-bindgen-cli).
-For WebGPU, set the build arg `CARGO_FEATURES=--no-default-features --features webgpu`.
+The repository's root `Dockerfile` builds this crate: wasm, `wasm-bindgen`, then the repo's
+`server.js` serves it (the 2D build is `Dockerfile.macroquad`). Expect a long first build (Bevy +
+wasm-bindgen-cli). For WebGPU, set the build arg `CARGO_FEATURES=--no-default-features --features webgpu`.
+Local test: `docker build -t outcrops-bevy . ; docker run -p 3000:3000 outcrops-bevy`.
 
 ## Honest status
 

@@ -112,7 +112,8 @@ src/main.rs       window, fixed 60 Hz loop, input, drawing, letterboxed 1280×72
 assets/           sprites and fonts (DejaVu, free license)
 web-template/     index.html + miniquad's gl.js loader for the browser build
 server.js         zero-dependency static server used on Railway
-Dockerfile        builds the wasm, then serves it with server.js
+Dockerfile        builds the Bevy 3D wasm, then serves it with server.js (Railway default)
+Dockerfile.macroquad  the 2D Macroquad web build (set as Dockerfile path on Railway to serve it)
 railway.json      Railway config (Dockerfile build, /healthz health check)
 .github/workflows CI: cargo test + wasm build
 bevy-prototype/   3D renderer prototype (Bevy) reusing src/game.rs + src/world.rs — see its README
@@ -144,15 +145,17 @@ node server.js   # http://localhost:3000
 ```
 
 **Deploy to Railway**: New Project → Deploy from GitHub repo → pick this repo → Settings →
-Networking → Generate Domain. Railway builds the `Dockerfile`; the health check is `/healthz`.
+Networking → Generate Domain. Railway builds the `Dockerfile`, which is now the **Bevy 3D** version; the health check is `/healthz`.
+To serve the 2D Macroquad version instead, set Settings → Build → Dockerfile path to
+`Dockerfile.macroquad` (or `railway.json` → `dockerfilePath`). The first Bevy build is slow (10–30 min).
 
 ## 3D prototype (Bevy)
 
 `bevy-prototype/` is an experimental 3D front-end for the **same game rules** (it includes
 `src/game.rs`, `world.rs`, `terrain.rs`, `geology.rs` and `kit.rs` unchanged): tilted or side-on
 camera (**V**), PBR textures, a sun that follows the game clock, 3D terrain with lakes, cliffs,
-forest and farms, glTF trees, and the backpack screen. It is **not** wired into Railway or CI-tested
-in the browser yet, and the map and cards screens are not ported. Run it with
+forest and farms, glTF trees, and the backpack screen. It is what the root `Dockerfile` deploys,
+but it has **not been run in a browser yet**, and the map and cards screens are not ported. Run it with
 `cd bevy-prototype; cargo run --release`; see `bevy-prototype/README.md`.
 
 ## Art credits

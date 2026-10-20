@@ -2,4 +2,5 @@
 /.git
 /*.png
 /*.docx
-/bevy-prototype
+/bevy-prototype/target
+/project
