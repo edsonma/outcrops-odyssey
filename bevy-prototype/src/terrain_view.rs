@@ -3,7 +3,7 @@
 //! The game logic (`../../src/terrain.rs`) is a pure function of position: elevation, lakes,
 //! rivers, cliffs, forest and farms. This module turns it into meshes:
 //!
-//! * one chunk = a 20x20 grid of 32-unit cells sampled from `Terrain::elevation`;
+//! * one chunk = a 40x40 grid of 16-unit cells sampled from `Terrain::elevation`;
 //! * each cell is classified exactly like the Macroquad renderer does (`Terrain::classify`) and
 //!   goes into one of four meshes: grass (open ground, farm, forest floor, lake bed), cliff rock,
 //!   water, and the dark "outside the survey" border;
@@ -22,9 +22,9 @@ use bevy::prelude::*;
 pub const S: f32 = 0.025;
 /// metres per metre-of-elevation (vertical).
 pub const VS: f32 = S * 1.25;
-const STEP: f32 = 32.0;
-const N: usize = 20; // CHUNK / STEP
-const _: () = assert!(N as i32 * 32 == CHUNK);
+const STEP: f32 = 16.0;
+const N: usize = 40; // CHUNK / STEP
+const _: () = assert!(N as i32 * 16 == CHUNK);
 
 /// World height (Bevy metres) of the ground at game position (x, y).
 pub fn ground_y(t: &Terrain, x: f32, y: f32) -> f32 {
@@ -214,9 +214,9 @@ pub fn build_chunk(t: &Terrain, cx: i32, cy: i32) -> ChunkGeo {
                     grass.quad(p, n, uv, c);
                     if ground == Ground::Forest {
                         let (wi, wj) = (cx * N as i32 + i, cy * N as i32 + j);
-                        if wi.rem_euclid(4) == 0 && wj.rem_euclid(4) == 0 {
-                            let jx = (hash2(wi, wj) - 0.5) * 70.0;
-                            let jy = (hash2(wj, wi) - 0.5) * 70.0;
+                        if wi.rem_euclid(8) == 0 && wj.rem_euclid(8) == 0 {
+                            let jx = (hash2(wi, wj) - 0.5) * 90.0;
+                            let jy = (hash2(wj, wi) - 0.5) * 90.0;
                             forest.push((gcx + jx, gcy + jy));
                         }
                     }

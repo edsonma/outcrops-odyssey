@@ -223,7 +223,7 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
-    let mut grass = pbr(&assets, "grass", Color::srgb(0.9, 0.96, 0.8), 0.25, LinearRgba::BLACK);
+    let mut grass = pbr(&assets, "grass", Color::srgb(0.85, 1.12, 0.7), 0.25, LinearRgba::BLACK);
     grass.perceptual_roughness = 1.0;
     let look = Look {
         // terrain UVs are in metres, so uv_scale 0.25 repeats the texture every 4 m, seamlessly across chunks
@@ -560,8 +560,8 @@ fn sync_chunks(
 
                     // trees: the glTF scene, varied by a stable per-position hash. Loose trees on
                     // open ground, plus the dense forest that fills the impassable forest cells.
-                    let loose = chunk.trees.iter().map(|p| (p.x, p.y, 1.0f32));
-                    let dense = geo.forest.iter().map(|&(x, y)| (x, y, 1.15f32));
+                    let loose = chunk.trees.iter().map(|p| (p.x, p.y, 0.8f32));
+                    let dense = geo.forest.iter().map(|&(x, y)| (x, y, 0.8f32));
                     for (i, (x, y, size)) in loose.chain(dense).enumerate() {
                         let h = hash01(&format!("{cx}_{cy}_t{i}"));
                         c.spawn((
@@ -788,7 +788,7 @@ fn update_hud(
             lines.push("Water - EMPTY".into());
         }
         lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
-        t.0 = lines.join("\n");
+        t.0 = ascii(&lines.join("\n"));
     }
     if let Ok(mut t) = hint.single_mut() {
         t.0 = match g.phase {
@@ -905,4 +905,25 @@ fn find_spot(t: &terrain::Terrain, want: fn(terrain::Ground) -> bool) -> Option<
         }
     }
     None
+}
+
+/// Bevy's built-in font has no accented letters; fold them so "Bacia do Parana" doesn't show boxes.
+fn ascii(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' => 'e',
+            'í' | 'ì' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' => 'o',
+            'ú' | 'ù' | 'ü' => 'u',
+            'ç' => 'c',
+            'Á' | 'Â' | 'Ã' => 'A',
+            'É' | 'Ê' => 'E',
+            'Í' => 'I',
+            'Ó' | 'Ô' | 'Õ' => 'O',
+            'Ú' => 'U',
+            'Ç' => 'C',
+            c => c,
+        })
+        .collect()
 }
