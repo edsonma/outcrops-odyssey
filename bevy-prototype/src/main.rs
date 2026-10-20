@@ -586,27 +586,37 @@ fn sync_chunks(
                         ));
                     }
 
-                    // main roads (each owned by the chunk containing its centre line), draped over the relief
-                    let yh = nearest_h_road(center.1);
-                    if ((yh / CHUNK as f32).floor() as i32) == cy {
-                        let road = terrain_view::drape_strip(t, (ox, yh), (ox + CHUNK as f32, yh), ROAD_W, 0.06, center, [1.0; 4]);
+                    // main roads: winding ribbons draped over the relief. A chunk draws the x (or y)
+                    // slice of every road whose centre line passes through it at mid-chunk.
+                    let (w, mid) = (CHUNK as f32, CHUNK as f32 / 2.0);
+                    for k in h_index(oy - 700.0)..=h_index(oy + w + 700.0) {
+                        let ym = h_road_y(k, ox + mid);
+                        if ym < oy || ym >= oy + w {
+                            continue;
+                        }
+                        let pos = move |x: f32| (x, h_road_y(k, x));
+                        let road = terrain_view::drape_curve(t, &pos, ox, ox + w, 20.0, ROAD_W, 0.06, center, [1.0; 4]);
                         c.spawn((Mesh3d(meshes.add(road.build())), MeshMaterial3d(road_mat.clone())));
                         let dashes = (0..8)
                             .map(|i| {
                                 let x = ox + i as f32 * 80.0 + 22.0;
-                                terrain_view::drape_strip(t, (x, yh), (x + 44.0, yh), 6.0, 0.09, center, [1.0; 4])
+                                terrain_view::drape_curve(t, &pos, x, x + 44.0, 22.0, 6.0, 0.09, center, [1.0; 4])
                             })
                             .collect();
                         c.spawn((Mesh3d(meshes.add(terrain_view::merge(dashes).build())), MeshMaterial3d(dash_mat.clone())));
                     }
-                    let xv = nearest_v_road(center.0);
-                    if ((xv / CHUNK as f32).floor() as i32) == cx {
-                        let road = terrain_view::drape_strip(t, (xv, oy), (xv, oy + CHUNK as f32), ROAD_W, 0.065, center, [1.0; 4]);
+                    for j in v_index(ox - 700.0)..=v_index(ox + w + 700.0) {
+                        let xm = v_road_x(j, oy + mid);
+                        if xm < ox || xm >= ox + w {
+                            continue;
+                        }
+                        let pos = move |y: f32| (v_road_x(j, y), y);
+                        let road = terrain_view::drape_curve(t, &pos, oy, oy + w, 20.0, ROAD_W, 0.065, center, [1.0; 4]);
                         c.spawn((Mesh3d(meshes.add(road.build())), MeshMaterial3d(road_mat.clone())));
                         let dashes = (0..8)
                             .map(|i| {
                                 let y = oy + i as f32 * 80.0 + 22.0;
-                                terrain_view::drape_strip(t, (xv, y), (xv, y + 44.0), 6.0, 0.095, center, [1.0; 4])
+                                terrain_view::drape_curve(t, &pos, y, y + 44.0, 22.0, 6.0, 0.095, center, [1.0; 4])
                             })
                             .collect();
                         c.spawn((Mesh3d(meshes.add(terrain_view::merge(dashes).build())), MeshMaterial3d(dash_mat.clone())));
@@ -794,6 +804,7 @@ fn update_hud(
         t.0 = match g.phase {
             Phase::Basecamp if g.near_truck() => "Press E to board the truck".into(),
             Phase::Basecamp => "Walk to the truck on the road below camp (WASD / click)".into(),
+            Phase::Exploring if g.player_at_camp() => "Press E (TRUCK) to rest at camp and end the day".into(),
             Phase::Exploring if g.player_on_road() => "Press E to call the truck back to basecamp".into(),
             Phase::Exploring if g.nearest_outcrop().is_some() => "SPACE (or click the rock) to break it".into(),
             Phase::Exploring if g.pickaxe.broken() => "Pickaxe broken - press B for a new one".into(),

@@ -458,48 +458,55 @@ fn render_map_legend(g: &Game, a: &Assets, x: f32, top: f32) {
     }
 }
 
-fn render_roads(g: &Game) {
+/// Draw one winding road. `pos(t)` is the centre line (t = x for horizontal-ish roads, y for vertical-ish).
+fn draw_road_curve(g: &Game, pos: &dyn Fn(f32) -> (f32, f32), t0: f32, t1: f32) {
     let (cam_x, cam_y) = g.cam();
+    let tr = |p: (f32, f32)| (p.0 - cam_x, SCREEN_H - (p.1 - cam_y));
     let asphalt = col(62, 62, 68, 255);
     let edge = col(200, 200, 190, 255);
     let dash = col(235, 200, 70, 255);
     let half = ROAD_W / 2.0;
-
-    // horizontal roads
-    let j0 = ((cam_y - ROAD_W) / ROAD_SPACING).floor() as i32;
-    let j1 = ((cam_y + SCREEN_H + ROAD_W) / ROAD_SPACING).ceil() as i32;
-    for j in j0..=j1 {
-        let y = j as f32 * ROAD_SPACING - cam_y;
-        if y + half < 0.0 || y - half > SCREEN_H {
-            continue;
+    let n = ((t1 - t0) / 12.0).ceil().max(1.0) as usize;
+    let mut prev = pos(t0);
+    for i in 1..=n {
+        let cur = pos(t0 + (t1 - t0) * i as f32 / n as f32);
+        let (dx, dy) = (cur.0 - prev.0, cur.1 - prev.1);
+        let len = dx.hypot(dy).max(1e-3);
+        let (nx, ny) = (-dy / len, dx / len);
+        let (a, b) = (tr(prev), tr(cur));
+        draw_line(a.0, a.1, b.0, b.1, ROAD_W + 2.0, asphalt);
+        for side in [-1.0f32, 1.0] {
+            let o = side * (half - 5.0);
+            let (ea, eb) = (tr((prev.0 + nx * o, prev.1 + ny * o)), tr((cur.0 + nx * o, cur.1 + ny * o)));
+            draw_line(ea.0, ea.1, eb.0, eb.1, 3.0, edge);
         }
-        solid(0.0, y - half, SCREEN_W, ROAD_W, asphalt);
-        solid(0.0, y + half - 7.0, SCREEN_W, 3.0, edge);
-        solid(0.0, y - half + 4.0, SCREEN_W, 3.0, edge);
-        let start = (cam_x / 80.0).floor() * 80.0;
-        let mut x = start;
-        while x < cam_x + SCREEN_W + 80.0 {
-            solid(x - cam_x, y - 3.0, 44.0, 6.0, dash);
-            x += 80.0;
-        }
+        prev = cur;
     }
-    // vertical roads
-    let k0 = ((cam_x - ROAD_V_OFFSET - ROAD_W) / ROAD_SPACING).floor() as i32;
-    let k1 = ((cam_x + SCREEN_W - ROAD_V_OFFSET + ROAD_W) / ROAD_SPACING).ceil() as i32;
-    for k in k0..=k1 {
-        let x = ROAD_V_OFFSET + k as f32 * ROAD_SPACING - cam_x;
-        if x + half < 0.0 || x - half > SCREEN_W {
+    let mut t = (t0 / 80.0).floor() * 80.0;
+    while t < t1 {
+        let (a, b) = (tr(pos(t)), tr(pos(t + 44.0)));
+        draw_line(a.0, a.1, b.0, b.1, 6.0, dash);
+        t += 80.0;
+    }
+}
+
+fn render_roads(g: &Game) {
+    let (cam_x, cam_y) = g.cam();
+    // horizontal-ish roads
+    for k in h_index(cam_y - 600.0)..=h_index(cam_y + SCREEN_H + 600.0) {
+        let mid = h_road_y(k, cam_x + SCREEN_W / 2.0);
+        if mid < cam_y - 500.0 || mid > cam_y + SCREEN_H + 500.0 {
             continue;
         }
-        solid(x - half, 0.0, ROAD_W, SCREEN_H, asphalt);
-        solid(x + half - 7.0, 0.0, 3.0, SCREEN_H, edge);
-        solid(x - half + 4.0, 0.0, 3.0, SCREEN_H, edge);
-        let start = (cam_y / 80.0).floor() * 80.0;
-        let mut y = start;
-        while y < cam_y + SCREEN_H + 80.0 {
-            solid(x - 3.0, y - cam_y, 6.0, 44.0, dash);
-            y += 80.0;
+        draw_road_curve(g, &|x| (x, h_road_y(k, x)), cam_x - 80.0, cam_x + SCREEN_W + 80.0);
+    }
+    // vertical-ish roads
+    for j in v_index(cam_x - 600.0)..=v_index(cam_x + SCREEN_W + 600.0) {
+        let mid = v_road_x(j, cam_y + SCREEN_H / 2.0);
+        if mid < cam_x - 500.0 || mid > cam_x + SCREEN_W + 500.0 {
+            continue;
         }
+        draw_road_curve(g, &|y| (v_road_x(j, y), y), cam_y - 80.0, cam_y + SCREEN_H + 80.0);
     }
 }
 
@@ -546,7 +553,8 @@ fn render_camp(g: &Game, a: &Assets) {
 
 fn render_truck(g: &Game) {
     let t = &g.truck;
-    let (dx, dy) = (t.dx, t.dy);
+    // the 2D truck is drawn with axis-aligned boxes, so snap its heading to the nearest axis
+    let (dx, dy) = if t.dx.abs() >= t.dy.abs() { (t.dx.signum(), 0.0) } else { (0.0, t.dy.signum()) };
     let part = |u0: f32, u1: f32, v0: f32, v1: f32, c: Color| {
         let (ax, ay) = (t.x + u0 * dx - v0 * dy, t.y + u0 * dy + v0 * dx);
         let (bx, by) = (t.x + u1 * dx - v1 * dy, t.y + u1 * dy + v1 * dx);
@@ -634,18 +642,27 @@ fn render_map_overlay(g: &Game, a: &Assets) {
         render_map_terrain(g, px + margin, py + margin, wmin_x, wmin_y, world_w, world_h, scale);
 
         // main roads and the basecamp
-        let (span_w, span_h) = (world_w * scale, world_h * scale);
-        let j0 = (wmin_y / ROAD_SPACING).ceil() as i32;
-        let j1 = ((wmin_y + world_h) / ROAD_SPACING).floor() as i32;
-        for j in j0..=j1 {
-            let yy = py + margin + (j as f32 * ROAD_SPACING - wmin_y) * scale;
-            solid(px + margin, yy - 2.0, span_w, 4.0, col(150, 150, 160, 255));
+        let to_map = |x: f32, y: f32| (px + margin + (x - wmin_x) * scale, SCREEN_H - (py + margin + (y - wmin_y) * scale));
+        let road_col = col(150, 150, 160, 255);
+        for k in h_index(wmin_y - 600.0)..=h_index(wmin_y + world_h + 600.0) {
+            let pts = world::h_points(k, wmin_x, wmin_x + world_w, 160.0);
+            for w in pts.windows(2) {
+                if w[0].1 < wmin_y - 100.0 || w[0].1 > wmin_y + world_h + 100.0 {
+                    continue;
+                }
+                let (a, b) = (to_map(w[0].0, w[0].1), to_map(w[1].0, w[1].1));
+                draw_line(a.0, a.1, b.0, b.1, 4.0, road_col);
+            }
         }
-        let k0 = ((wmin_x - ROAD_V_OFFSET) / ROAD_SPACING).ceil() as i32;
-        let k1 = ((wmin_x + world_w - ROAD_V_OFFSET) / ROAD_SPACING).floor() as i32;
-        for k in k0..=k1 {
-            let xx = px + margin + (ROAD_V_OFFSET + k as f32 * ROAD_SPACING - wmin_x) * scale;
-            solid(xx - 2.0, py + margin, 4.0, span_h, col(150, 150, 160, 255));
+        for j in v_index(wmin_x - 600.0)..=v_index(wmin_x + world_w + 600.0) {
+            let pts = world::v_points(j, wmin_y, wmin_y + world_h, 160.0);
+            for w in pts.windows(2) {
+                if w[0].0 < wmin_x - 100.0 || w[0].0 > wmin_x + world_w + 100.0 {
+                    continue;
+                }
+                let (a, b) = (to_map(w[0].0, w[0].1), to_map(w[1].0, w[1].1));
+                draw_line(a.0, a.1, b.0, b.1, 4.0, road_col);
+            }
         }
         let cxm = px + margin + (0.0 - wmin_x) * scale;
         let cym = py + margin + (CAMP.1 - wmin_y) * scale;
@@ -777,6 +794,7 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
     match g.phase {
         Phase::Basecamp if g.near_truck() => hint = Some((if touch { "Tap the truck (or BOARD) to climb in" } else { "Press E to board the truck" }.into(), col(255, 255, 255, 235))),
         Phase::Basecamp => hint = Some((if touch { "Tap the truck on the road below camp" } else { "Walk to the truck on the road below camp" }.into(), col(230, 230, 210, 210))),
+        Phase::Exploring if g.player_at_camp() => hint = Some((if touch { "Tap TRUCK to rest at camp and end the day" } else { "Press E to rest at camp and end the day" }.into(), col(190, 240, 190, 240))),
         Phase::Exploring if g.player_on_road() => hint = Some((if touch { "Tap TRUCK to call the truck back to basecamp" } else { "Press E to call the truck back to basecamp" }.into(), col(190, 240, 190, 240))),
         Phase::Exploring if g.nearest_outcrop().is_some() => hint = Some((if touch { "Tap the outcrop (or BREAK) to break it" } else { "SPACE to break outcrop" }.into(), col(255, 255, 255, 220))),
         Phase::Exploring if g.pickaxe.broken() => hint = Some((if touch { "Pickaxe broken - open PACK for a new one" } else { "Pickaxe broken - press B for a new one" }.into(), col(255, 170, 130, 240))),
@@ -839,8 +857,10 @@ fn render_road_compass(g: &Game, a: &Assets) {
         return;
     }
     let (px, py) = (g.player.x, g.player.y);
-    let (dy_road, dx_road) = (nearest_h_road(py) - py, nearest_v_road(px) - px);
-    let (vx, vy, dist) = if dy_road.abs() <= dx_road.abs() { (0.0, dy_road.signum(), dy_road.abs()) } else { (dx_road.signum(), 0.0, dx_road.abs()) };
+    let ((ax, ay), _) = road_anchor(px, py);
+    let (rx, ry) = (ax - px, ay - py);
+    let dist = rx.hypot(ry).max(1e-3);
+    let (vx, vy) = (rx / dist, ry / dist);
     let dist = (dist - ROAD_W / 2.0).max(0.0);
     let (cx, cy) = (SCREEN_W / 2.0 + vx * 110.0, SCREEN_H / 2.0 + vy * 110.0 + 20.0);
     // y-up -> y-down for the triangle

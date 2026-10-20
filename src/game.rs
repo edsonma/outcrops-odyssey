@@ -322,6 +322,11 @@ impl Game {
         on_road(self.player.x, self.player.y, 0.0)
     }
 
+    /// Standing in (or right by) the basecamp: you can walk home instead of calling the truck.
+    pub fn player_at_camp(&self) -> bool {
+        in_camp(self.player.x, self.player.y, 60.0)
+    }
+
     pub fn near_truck(&self) -> bool {
         let d = ((self.player.x - self.truck.x).powi(2) + (self.player.y - self.truck.y).powi(2)).sqrt();
         d <= BOARD_RANGE
@@ -383,14 +388,12 @@ impl Game {
             let (vx, vy) = (wx - self.truck.x, wy - self.truck.y);
             let dist = (vx * vx + vy * vy).sqrt();
             if dist > 0.01 {
-                // roads are axis-aligned, so the heading is too
-                if vx.abs() >= vy.abs() {
-                    self.truck.dx = vx.signum();
-                    self.truck.dy = 0.0;
-                } else {
-                    self.truck.dx = 0.0;
-                    self.truck.dy = vy.signum();
-                }
+                // roads curve, so the heading is whatever the next leg points along (smoothed)
+                let (hx, hy) = (vx / dist, vy / dist);
+                let (sx, sy) = (self.truck.dx * 0.8 + hx * 0.2, self.truck.dy * 0.8 + hy * 0.2);
+                let len = (sx * sx + sy * sy).sqrt().max(1e-4);
+                self.truck.dx = sx / len;
+                self.truck.dy = sy / len;
             }
             if dist <= budget {
                 self.truck.x = wx;
@@ -464,7 +467,10 @@ impl Game {
         self.warn_if_thirsty(before);
 
         if self.minutes_of_day() >= SUNSET_MIN {
-            if self.player_on_road() {
+            if self.player_at_camp() {
+                self.set_banner("Sunset - you made it back to camp on foot".to_string());
+                self.arrive_at_camp();
+            } else if self.player_on_road() {
                 self.set_banner("Sunset - the truck picked you up just in time".to_string());
                 self.start_truck_back();
             } else {
@@ -477,9 +483,7 @@ impl Game {
 
     fn start_truck_back(&mut self) {
         // the truck meets the player on the road centre line
-        let (xv, yh) = (nearest_v_road(self.player.x), nearest_h_road(self.player.y));
-        let on_h = (self.player.y - yh).abs() <= ROAD_W / 2.0;
-        let (tx, ty) = if on_h { (self.player.x, yh) } else { (xv, self.player.y) };
+        let ((tx, ty), _) = road_anchor(self.player.x, self.player.y);
         self.truck.x = tx;
         self.truck.y = ty;
         self.route = route_to_camp(tx, ty);
@@ -489,22 +493,27 @@ impl Game {
     }
 
     fn start_truck_out(&mut self) {
-        // Pick today's drop point: somewhere on a vertical main road, clear of the camp.
-        let road_k = self.rng.below(3) as i32 - 1; // vertical road index -1..=1 around x=1600
-        let xv = ROAD_V_OFFSET + road_k as f32 * ROAD_SPACING;
-        let ty = match self.terrain.bounds {
-            // bounded map: anywhere along the road inside the map, but not right by the camp
-            Some((_, by0, _, by1)) => {
-                let (lo, hi) = (by0 + 200.0, by1 - 200.0);
-                let (neg, pos) = ((-900.0 - lo).max(0.0), (hi - 900.0).max(0.0));
-                let r = self.rng.below((neg + pos) as u32) as f32;
-                if r < neg { -900.0 - r } else { 900.0 + (r - neg) }
+        // Pick today's drop point: somewhere along one of the winding vertical-ish roads.
+        let (road_j, ty) = match self.terrain.bounds {
+            // bounded map: any vertical road well inside the map, anywhere along it
+            Some((bx0, by0, bx1, by1)) => {
+                let roads: Vec<i32> = (-3..=3)
+                    .filter(|&j| {
+                        let x = ROAD_V_OFFSET + j as f32 * ROAD_SPACING;
+                        x > bx0 + 600.0 && x < bx1 - 600.0
+                    })
+                    .collect();
+                let j = roads[self.rng.below(roads.len() as u32) as usize];
+                let (lo, hi) = (by0 + 300.0, by1 - 300.0);
+                (j, lo + self.rng.below((hi - lo) as u32) as f32)
             }
             None => {
+                let j = self.rng.below(3) as i32 - 1;
                 let mag = 900.0 + self.rng.below(1600) as f32;
-                if self.rng.below(2) == 0 { mag } else { -mag }
+                (j, if self.rng.below(2) == 0 { mag } else { -mag })
             }
         };
+        let xv = v_road_x(road_j, ty);
         self.route = route_from_camp(xv, ty);
         self.route_idx = 0;
         self.truck.x = TRUCK_SPOT.0;
@@ -693,6 +702,10 @@ impl Game {
     fn interact(&mut self) {
         match self.phase {
             Phase::Basecamp if self.near_truck() => self.start_truck_out(),
+            Phase::Exploring if self.player_at_camp() => {
+                self.set_banner("Back at camp - day complete".to_string());
+                self.arrive_at_camp();
+            }
             Phase::Exploring if self.player_on_road() => {
                 self.set_banner("Truck called - heading back to basecamp".to_string());
                 self.start_truck_back();
@@ -1343,7 +1356,7 @@ mod tests {
         assert_eq!(g.phase, Phase::Exploring);
 
         // walk onto the road and call the truck
-        exploring_at(&mut g, 1600.0, 900.0);
+        exploring_at(&mut g, v_road_x(0, 900.0), 900.0);
         g.tick(&press_e());
         assert_eq!(g.phase, Phase::TruckBack);
         run_ride(&mut g);
@@ -1382,7 +1395,7 @@ mod tests {
     #[test]
     fn being_on_the_road_at_sunset_gets_you_picked_up() {
         let mut g = new_game(9);
-        exploring_at(&mut g, 1600.0 + 30.0, 1200.0);
+        exploring_at(&mut g, v_road_x(0, 1200.0) + 30.0, 1200.0);
         g.clock_ticks = (SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE - 3;
         for _ in 0..6 {
             g.tick(&idle());
@@ -1390,6 +1403,40 @@ mod tests {
         assert_eq!(g.phase, Phase::TruckBack);
         run_ride(&mut g);
         assert_eq!(g.phase, Phase::Sleeping);
+    }
+
+    #[test]
+    fn walking_back_to_camp_ends_the_day_without_the_truck() {
+        let mut g = new_game(5);
+        exploring_at(&mut g, 0.0, 300.0);
+        assert!(g.player_at_camp() && !g.player_on_road());
+        g.tick(&press_e());
+        assert_eq!(g.phase, Phase::Sleeping);
+        assert_eq!((g.truck.x, g.truck.y), TRUCK_SPOT);
+        // and the next morning starts normally
+        for _ in 0..SLEEP_TICKS + 2 {
+            g.tick(&idle());
+        }
+        assert_eq!((g.phase, g.day), (Phase::Basecamp, 2));
+    }
+
+    #[test]
+    fn being_back_at_camp_at_sunset_is_safe() {
+        let mut g = new_game(5);
+        exploring_at(&mut g, 100.0, 250.0);
+        g.clock_ticks = (SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE - 3;
+        for _ in 0..6 {
+            g.tick(&idle());
+        }
+        assert_eq!(g.phase, Phase::Sleeping);
+    }
+
+    #[test]
+    fn e_does_nothing_in_open_country() {
+        let mut g = new_game(5);
+        exploring_at(&mut g, 700.0, 1500.0);
+        g.tick(&press_e());
+        assert_eq!(g.phase, Phase::Exploring);
     }
 
     #[test]

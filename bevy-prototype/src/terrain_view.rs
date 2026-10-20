@@ -255,6 +255,30 @@ pub fn drape_strip(t: &Terrain, from: (f32, f32), to: (f32, f32), width: f32, li
     b
 }
 
+/// A winding road ribbon draped over the terrain. `pos(t)` is the centre line in game units;
+/// the tangent comes from the curve itself, so neighbouring slices join without cracks.
+pub fn drape_curve(t: &Terrain, pos: &dyn Fn(f32) -> (f32, f32), t0: f32, t1: f32, step: f32, width: f32, lift: f32, origin: (f32, f32), colour: [f32; 4]) -> Buf {
+    let mut b = Buf::default();
+    let n = ((t1 - t0).abs() / step).ceil().max(1.0) as usize;
+    let at = |x: f32, y: f32| Vec3::new((x - origin.0) * S, ground_y(t, x, y) + lift, -(y - origin.1) * S);
+    let edge = |u: f32| {
+        let (cx, cy) = pos(u);
+        let (ax, ay) = pos(u - 2.0);
+        let (bx, by) = pos(u + 2.0);
+        let (dx, dy) = (bx - ax, by - ay);
+        let len = dx.hypot(dy).max(1e-3);
+        let (nx, ny) = (-dy / len * width / 2.0, dx / len * width / 2.0);
+        (at(cx - nx, cy - ny), at(cx + nx, cy + ny))
+    };
+    let mut prev = edge(t0);
+    for i in 1..=n {
+        let cur = edge(t0 + (t1 - t0) * i as f32 / n as f32);
+        b.quad_up([prev.0, cur.0, cur.1, prev.1], colour);
+        prev = cur;
+    }
+    b
+}
+
 /// A rectangle draped over the terrain (camp yard), absolute world coordinates.
 pub fn drape_rect(t: &Terrain, r: (f32, f32, f32, f32), lift: f32, colour: [f32; 4]) -> Buf {
     let mut b = Buf::default();

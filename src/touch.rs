@@ -60,7 +60,7 @@ pub fn buttons(g: &Game) -> Vec<Button> {
             if g.player_visible() {
                 let act = match g.phase {
                     Phase::Basecamp => ("BOARD", g.near_truck()),
-                    Phase::Exploring => ("TRUCK", g.player_on_road()),
+                    Phase::Exploring => ("TRUCK", g.player_on_road() || g.player_at_camp()),
                     _ => ("E", false),
                 };
                 v.push(b(BtnId::Act, 930.0, 40.0, 130.0, 110.0, act.0, act.1));

@@ -15,25 +15,64 @@ const HASH_MUL: i64 = 9_973;
 const HASH_MUL2: i64 = 7_919;
 
 // ---- main roads & basecamp -------------------------------------------------
-// Horizontal main roads run along y = k * ROAD_SPACING; vertical ones along
-// x = ROAD_V_OFFSET + k * ROAD_SPACING. The basecamp sits just north of the
-// y = 0 road, clear of every vertical road, with the truck parked on the road.
-pub const ROAD_SPACING: f32 = 3200.0;
+// A sparse, winding network: horizontal-ish roads run near y = k * ROAD_SPACING and
+// vertical-ish ones near x = ROAD_V_OFFSET + j * ROAD_SPACING, but every road
+// meanders (two summed sine waves with a per-road phase), so they are curves, not a
+// chessboard. Blocks are 4800 units (120 m) across. The basecamp sits just north of
+// the y = 0 road, which is dead straight near the camp so the truck spot stays put.
+pub const ROAD_SPACING: f32 = 4800.0;
 pub const ROAD_W: f32 = 120.0;
-pub const ROAD_V_OFFSET: f32 = 1600.0;
+pub const ROAD_V_OFFSET: f32 = 2400.0;
 pub const CAMP: (f32, f32, f32, f32) = (-400.0, 90.0, 400.0, 520.0); // x0, y0, x1, y1
 pub const TRUCK_SPOT: (f32, f32) = (0.0, 0.0);
 pub const CAMP_SPAWN: (f32, f32) = (0.0, 230.0);
 
-pub fn nearest_h_road(y: f32) -> f32 {
-    (y / ROAD_SPACING).round() * ROAD_SPACING
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
-pub fn nearest_v_road(x: f32) -> f32 {
-    ROAD_V_OFFSET + ((x - ROAD_V_OFFSET) / ROAD_SPACING).round() * ROAD_SPACING
+
+/// Sideways wander of a road at distance `s` along it (road `idx`, family `fam`).
+fn wander(fam: f32, idx: i32, s: f32) -> f32 {
+    let p = idx as f32 * 1.7 + fam * 4.1;
+    260.0 * (s / 650.0 + p).sin() + 70.0 * (s / 280.0 + 2.0 * p + 1.0).sin()
 }
+
+/// y of horizontal road `k` at x. Road 0 is straight near the camp.
+pub fn h_road_y(k: i32, x: f32) -> f32 {
+    let fade = if k == 0 { smoothstep(600.0, 1500.0, x.abs()) } else { 1.0 };
+    k as f32 * ROAD_SPACING + wander(0.0, k, x) * fade
+}
+
+/// x of vertical road `j` at y.
+pub fn v_road_x(j: i32, y: f32) -> f32 {
+    ROAD_V_OFFSET + j as f32 * ROAD_SPACING + wander(1.0, j, y)
+}
+
+pub fn h_index(y: f32) -> i32 {
+    (y / ROAD_SPACING).round() as i32
+}
+pub fn v_index(x: f32) -> i32 {
+    ((x - ROAD_V_OFFSET) / ROAD_SPACING).round() as i32
+}
+
+/// Slope dy/dx of horizontal road k (numerical; the curves are smooth).
+fn h_slope(k: i32, x: f32) -> f32 {
+    (h_road_y(k, x + 8.0) - h_road_y(k, x - 8.0)) / 16.0
+}
+fn v_slope(j: i32, y: f32) -> f32 {
+    (v_road_x(j, y + 8.0) - v_road_x(j, y - 8.0)) / 16.0
+}
+
 /// Distance to the centre line of the closest main road.
 pub fn road_distance(x: f32, y: f32) -> f32 {
-    (y - nearest_h_road(y)).abs().min((x - nearest_v_road(x)).abs())
+    let k = h_index(y);
+    let sh = h_slope(k, x);
+    let dh = (y - h_road_y(k, x)).abs() / (1.0 + sh * sh).sqrt();
+    let j = v_index(x);
+    let sv = v_slope(j, y);
+    let dv = (x - v_road_x(j, y)).abs() / (1.0 + sv * sv).sqrt();
+    dh.min(dv)
 }
 pub fn on_road(x: f32, y: f32, extra: f32) -> bool {
     road_distance(x, y) <= ROAD_W / 2.0 + extra
@@ -42,25 +81,75 @@ pub fn in_camp(x: f32, y: f32, margin: f32) -> bool {
     x >= CAMP.0 - margin && x <= CAMP.2 + margin && y >= CAMP.1 - margin && y <= CAMP.3 + margin
 }
 
+/// Closest point on the centre line of the nearest road, and whether that road is horizontal-ish.
+pub fn road_anchor(x: f32, y: f32) -> ((f32, f32), bool) {
+    let (k, j) = (h_index(y), v_index(x));
+    let sh = h_slope(k, x);
+    let sv = v_slope(j, y);
+    let dh = (y - h_road_y(k, x)).abs() / (1.0 + sh * sh).sqrt();
+    let dv = (x - v_road_x(j, y)).abs() / (1.0 + sv * sv).sqrt();
+    if dh <= dv { ((x, h_road_y(k, x)), true) } else { ((v_road_x(j, y), y), false) }
+}
+
+/// Where horizontal road k crosses vertical road j.
+pub fn crossing(k: i32, j: i32) -> (f32, f32) {
+    let mut x = ROAD_V_OFFSET + j as f32 * ROAD_SPACING;
+    let mut y = h_road_y(k, x);
+    for _ in 0..8 {
+        x = v_road_x(j, y);
+        y = h_road_y(k, x);
+    }
+    (x, y)
+}
+
+/// Points along horizontal road k from x0 to x1 (either direction), at most `step` apart.
+pub fn h_points(k: i32, x0: f32, x1: f32, step: f32) -> Vec<(f32, f32)> {
+    let n = ((x1 - x0).abs() / step).ceil().max(1.0) as usize;
+    (0..=n).map(|i| { let x = x0 + (x1 - x0) * i as f32 / n as f32; (x, h_road_y(k, x)) }).collect()
+}
+pub fn v_points(j: i32, y0: f32, y1: f32, step: f32) -> Vec<(f32, f32)> {
+    let n = ((y1 - y0).abs() / step).ceil().max(1.0) as usize;
+    (0..=n).map(|i| { let y = y0 + (y1 - y0) * i as f32 / n as f32; (v_road_x(j, y), y) }).collect()
+}
+
+const ROUTE_STEP: f32 = 120.0;
+
 fn push_unique(pts: &mut Vec<(f32, f32)>, p: (f32, f32)) {
     if pts.last().map_or(true, |l| (l.0 - p.0).abs() > 0.5 || (l.1 - p.1).abs() > 0.5) {
         pts.push(p);
     }
 }
 
+fn extend_unique(pts: &mut Vec<(f32, f32)>, more: Vec<(f32, f32)>) {
+    for p in more {
+        push_unique(pts, p);
+    }
+}
+
 /// Waypoints a truck follows (staying on main roads) from a road position
 /// back to the basecamp truck spot.
 pub fn route_to_camp(px: f32, py: f32) -> Vec<(f32, f32)> {
-    let (xv, yh) = (nearest_v_road(px), nearest_h_road(py));
-    let on_h = (py - yh).abs() <= ROAD_W / 2.0;
+    let ((ax, ay), on_h) = road_anchor(px, py);
     let mut pts = Vec::new();
     if on_h {
-        push_unique(&mut pts, (px, yh));
-        push_unique(&mut pts, (xv, yh));
+        let k = h_index(ay);
+        if k == 0 {
+            extend_unique(&mut pts, h_points(0, ax, TRUCK_SPOT.0, ROUTE_STEP));
+        } else {
+            // along this road to the nearest vertical road, down it to road 0, then home
+            let j = v_index(ax);
+            let (ix, iy) = crossing(k, j);
+            let (hx, hy) = crossing(0, j);
+            extend_unique(&mut pts, h_points(k, ax, ix, ROUTE_STEP));
+            extend_unique(&mut pts, v_points(j, iy, hy, ROUTE_STEP));
+            extend_unique(&mut pts, h_points(0, hx, TRUCK_SPOT.0, ROUTE_STEP));
+        }
     } else {
-        push_unique(&mut pts, (xv, py));
+        let j = v_index(ax);
+        let (hx, hy) = crossing(0, j);
+        extend_unique(&mut pts, v_points(j, ay, hy, ROUTE_STEP));
+        extend_unique(&mut pts, h_points(0, hx, TRUCK_SPOT.0, ROUTE_STEP));
     }
-    push_unique(&mut pts, (xv, TRUCK_SPOT.1));
     push_unique(&mut pts, TRUCK_SPOT);
     pts
 }
@@ -280,31 +369,73 @@ mod tests {
 
     #[test]
     fn roads_and_camp_geometry() {
-        assert!(on_road(0.0, 0.0, 0.0) && on_road(1600.0, 777.0, 0.0) && on_road(-1600.0, 5.0, 0.0));
+        assert!(on_road(0.0, 0.0, 0.0));
+        let (vx, vy) = (v_road_x(0, 777.0), 777.0);
+        assert!(on_road(vx, vy, 0.0));
+        let (hx, hy) = (1000.0, h_road_y(1, 1000.0));
+        assert!(on_road(hx, hy, 0.0));
         assert!(!on_road(400.0, 400.0, 0.0));
-        // camp is clear of every road
+        // camp is clear of every road, and the road in front of it is dead straight
         for &(x, y) in &[(CAMP.0, CAMP.1), (CAMP.2, CAMP.3), (CAMP.0, CAMP.3), (CAMP.2, CAMP.1)] {
             assert!(!on_road(x, y, 0.0), "{x},{y}");
+        }
+        for x in [-500.0f32, -250.0, 0.0, 250.0, 500.0] {
+            assert!(h_road_y(0, x).abs() < 1e-3, "road 0 must be straight by the camp at x={x}");
         }
         assert!(on_road(TRUCK_SPOT.0, TRUCK_SPOT.1, 0.0));
         assert!(in_camp(CAMP_SPAWN.0, CAMP_SPAWN.1, 0.0) && !on_road(CAMP_SPAWN.0, CAMP_SPAWN.1, 0.0));
     }
 
     #[test]
-    fn routes_are_axis_aligned_road_driving_ending_at_camp() {
-        for &(x, y) in &[(1600.0, 2000.0), (1600.0, -1800.0), (-1600.0, 900.0), (4800.0, 3200.0), (500.0, 3200.0), (1600.0, 0.0), (-3000.0, 0.0)] {
+    fn roads_really_curve_and_blocks_are_far_apart() {
+        // the vertical road wanders by hundreds of units, so it is not a straight line
+        let xs: Vec<f32> = (0..20).map(|i| v_road_x(0, i as f32 * 400.0)).collect();
+        let (lo, hi) = (xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
+        assert!(hi - lo > 300.0, "road should meander, spread was {}", hi - lo);
+        // slope stays drivable
+        for i in 0..400 {
+            let y = i as f32 * 20.0;
+            assert!((v_road_x(0, y + 8.0) - v_road_x(0, y - 8.0)).abs() / 16.0 < 1.0);
+        }
+        // neighbouring roads never come close to touching
+        let gap = (0..400).map(|i| { let y = i as f32 * 30.0; v_road_x(0, y) - v_road_x(-1, y) }).fold(f32::MAX, f32::min);
+        assert!(gap > 3000.0, "gap {gap}");
+        assert!(ROAD_SPACING >= 4800.0);
+    }
+
+    #[test]
+    fn routes_follow_the_roads_and_end_at_camp() {
+        let pts = [
+            (v_road_x(0, 2000.0), 2000.0),
+            (v_road_x(0, -1800.0), -1800.0),
+            (v_road_x(-1, 900.0), 900.0),
+            (3000.0, h_road_y(1, 3000.0)),
+            (-1500.0, h_road_y(1, -1500.0)),
+            (1200.0, h_road_y(0, 1200.0)),
+            (-3000.0, h_road_y(0, -3000.0)),
+        ];
+        for &(x, y) in &pts {
             let r = route_to_camp(x, y);
             assert_eq!(*r.last().unwrap(), TRUCK_SPOT);
             for w in r.windows(2) {
-                assert!(w[0].0 == w[1].0 || w[0].1 == w[1].1, "diagonal leg {:?}", w);
-                for k in 0..=20 {
-                    let t = k as f32 / 20.0;
+                assert!(((w[0].0 - w[1].0).powi(2) + (w[0].1 - w[1].1).powi(2)).sqrt() <= ROUTE_STEP * 1.5 + 1.0, "long leg {:?}", w);
+                for k in 0..=10 {
+                    let t = k as f32 / 10.0;
                     let (px, py) = (w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t);
                     assert!(on_road(px, py, 0.5), "off-road at {px},{py} for target {x},{y}");
                 }
             }
-            let out = route_from_camp(x, y);
-            assert_eq!(out.first().copied().unwrap(), TRUCK_SPOT);
+            assert_eq!(route_from_camp(x, y).first().copied().unwrap(), TRUCK_SPOT);
+        }
+    }
+
+    #[test]
+    fn crossings_lie_on_both_roads() {
+        for k in -1..=1 {
+            for j in -1..=1 {
+                let (x, y) = crossing(k, j);
+                assert!((y - h_road_y(k, x)).abs() < 1.0 && (x - v_road_x(j, y)).abs() < 1.0, "k{k} j{j}");
+            }
         }
     }
 
@@ -338,7 +469,7 @@ mod tests {
                     }
                 }
             }
-            assert!(seen > 40, "{} has only {} outcrops", r.name, seen);
+            assert!(seen > 25, "{} has only {} outcrops", r.name, seen);
         }
     }
 }

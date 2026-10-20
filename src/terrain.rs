@@ -7,6 +7,8 @@
 //! valid whatever the surrounding relief is.
 
 use crate::world::{road_distance, CAMP, ROAD_W};
+#[cfg(test)]
+use crate::world::{h_road_y, v_road_x};
 
 /// Elevation range in metres (1 world unit = 1 m for slope maths).
 pub const ELEV_MAX: f32 = 300.0;
@@ -350,14 +352,14 @@ mod tests {
     #[test]
     fn roads_and_camp_are_flat_and_obstacle_free() {
         let t = Terrain::default();
-        for &(x, y) in &[(0.0, 0.0), (1600.0, 900.0), (1600.0, -2200.0), (-1600.0, 3200.0), (0.0, 300.0), (-350.0, 450.0)] {
+        for &(x, y) in &[(0.0, 0.0), (v_road_x(0, 900.0), 900.0), (v_road_x(0, -2200.0), -2200.0), (v_road_x(-1, 3200.0), 3200.0), (0.0, 300.0), (-350.0, 450.0)] {
             assert!(!t.blocked(x, y), "{x},{y}");
             assert!(t.steepness(x, y) < 0.15, "{x},{y} steep {}", t.steepness(x, y));
         }
         // sample along roads and the camp
         for k in -40..=40 {
             let s = k as f32 * 150.0;
-            assert!(!t.blocked(s, 0.0) && !t.blocked(1600.0, s) && !t.blocked(-1600.0, s) && !t.blocked(s, 3200.0));
+            assert!(!t.blocked(s, h_road_y(0, s)) && !t.blocked(v_road_x(0, s), s) && !t.blocked(v_road_x(-1, s), s) && !t.blocked(s, h_road_y(1, s)));
         }
         assert!(!t.blocked(TRUCK_SPOT.0, TRUCK_SPOT.1));
     }
