@@ -41,6 +41,8 @@ use terrain_view::{ground_y, S};
 use world::*;
 
 const SPAWN_RADIUS: i32 = 2;
+/// Chunk meshes built per frame (see `sync_chunks`).
+const CHUNKS_PER_FRAME: usize = 2;
 
 fn to_world(x: f32, y: f32) -> Vec3 {
     Vec3::new(x * S, 0.0, -y * S)
@@ -127,6 +129,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(Time::<Fixed>::from_hz(60.0))
+        .insert_resource(bevy::light::DirectionalLightShadowMap { size: if cfg!(target_arch = "wasm32") { 1024 } else { 2048 } })
         .insert_resource(GameRes(Game::new(0x5eed_1234)))
         .init_resource::<PendingInput>()
         .init_resource::<ChunkEntities>()
@@ -257,9 +260,9 @@ fn setup_scene(
         Sun,
         DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: true, ..default() },
         CascadeShadowConfigBuilder {
-            num_cascades: 3,
+            num_cascades: 2,
             first_cascade_far_bound: 10.0,
-            maximum_distance: 70.0,
+            maximum_distance: 48.0,
             ..default()
         }
         .build(),
@@ -275,6 +278,9 @@ fn setup_scene(
     commands.spawn((
         MainCamera,
         Camera3d::default(),
+        // phones: skip multisampling, the textured ground hides most aliasing
+        #[cfg(target_arch = "wasm32")]
+        bevy::render::view::Msaa::Off,
         Transform::from_xyz(0.0, 11.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
         DistanceFog {
             color: Color::srgb(0.55, 0.72, 0.9),
@@ -494,12 +500,16 @@ fn sync_chunks(
         }
     }
 
-    for dx in -SPAWN_RADIUS..=SPAWN_RADIUS {
-        for dy in -SPAWN_RADIUS..=SPAWN_RADIUS {
-            let key = (pcx + dx, pcy + dy);
-            if live.0.contains_key(&key) {
-                continue;
-            }
+    // building a chunk (mesh + trees + roads) is the heaviest thing the game does, so at most
+    // CHUNKS_PER_FRAME are made per frame, nearest first: no hitch when walking into new ground
+    let mut wanted: Vec<(i32, i32)> = (-SPAWN_RADIUS..=SPAWN_RADIUS)
+        .flat_map(|dx| (-SPAWN_RADIUS..=SPAWN_RADIUS).map(move |dy| (pcx + dx, pcy + dy)))
+        .filter(|k| !live.0.contains_key(k))
+        .collect();
+    wanted.sort_by_key(|(x, y)| (x - pcx).pow(2) + (y - pcy).pow(2));
+    wanted.truncate(CHUNKS_PER_FRAME);
+    {
+        for key in wanted {
             let Some(chunk) = g.chunks.get(&key) else { continue };
             let (cx, cy) = key;
             let (ox, oy) = ((cx * CHUNK) as f32, (cy * CHUNK) as f32);
@@ -751,6 +761,13 @@ fn update_environment(
 }
 
 // ========================================================================== HUD
+/// Only touch a `Text` when it really changed: re-assigning identical text re-lays-out the glyphs.
+fn set_text(t: &mut Text, new: String) {
+    if t.0 != new {
+        t.0 = new;
+    }
+}
+
 fn update_hud(
     game: Res<GameRes>,
     mode: Res<CamMode>,
@@ -784,10 +801,10 @@ fn update_hud(
             lines.push("Water - EMPTY".into());
         }
         lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
-        t.0 = if g.ui_mode == UiMode::Backpack { String::new() } else { ascii(&lines.join("\n")) };
+        set_text(&mut t, if g.ui_mode == UiMode::Backpack { String::new() } else { ascii(&lines.join("\n")) });
     }
     if let Ok(mut t) = hint.single_mut() {
-        t.0 = match g.phase {
+        let msg = match g.phase {
             Phase::Basecamp if g.near_truck() => "Press E to board the truck".into(),
             Phase::Basecamp => "Walk to the truck on the road below camp (WASD / click)".into(),
             Phase::Exploring if g.player_at_camp() => "Press E (TRUCK) to rest at camp and end the day".into(),
@@ -801,12 +818,13 @@ fn update_hud(
             Phase::Sleeping => format!("Day {} complete - resting...", g.day),
             _ => String::new(),
         };
+        set_text(&mut t, msg);
     }
     if let Ok(mut t) = banner.single_mut() {
-        t.0 = g.banner.as_ref().map(|(s, _)| s.clone()).unwrap_or_default();
+        set_text(&mut t, g.banner.as_ref().map(|(s, _)| s.clone()).unwrap_or_default());
     }
     if let Ok(mut t) = log.single_mut() {
-        t.0 = g.popups.iter().rev().take(4).map(|p| p.text.clone()).collect::<Vec<_>>().join("\n");
+        set_text(&mut t, g.popups.iter().rev().take(4).map(|p| p.text.clone()).collect::<Vec<_>>().join("\n"));
     }
 }
 

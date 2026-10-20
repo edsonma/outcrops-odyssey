@@ -80,3 +80,11 @@ Region changes do rebuild the 3D world, but that path has not been exercised vis
 2. Real models from Blender (rocks, truck, cabins, geologist) as `.glb`; compress textures to KTX2.
 3. Port the touch UI (stick + buttons) from `src/touch.rs` using Bevy UI.
 4. Swap the primitive-built actors for animated glTF characters.
+
+## Look & performance notes
+
+- **Textures** are procedural and tileable (`tools/make_procedural_textures.py` → `assets/textures`): grass, strata (cliffs, with a dip so layers tilt), wood, shingles, canvas, gravel, asphalt, crops, bark, truck paint. Cabins, roofs, crates, tent, yard, roads, fences, farms and the trees (`tools/make_tree_glb.py`) all use them.
+- **Characters** (`src/scenery.rs`): the vintage green pickup and the geologist (hard hat, glasses, beard, orange vest, backpack, notebook, rock) are built from primitives; arms/legs swing while walking and the wheels spin with the truck's speed.
+- **3D contours**: every 15 m of elevation is a thin ribbon laid on the terrain (every 5th is heavier), built per chunk with the same marching squares as the 2D map.
+- **Real-terrain .glb scans** (Sketchfab satellite scans) are not bundled: they are single aerial photos on a mesh, not tileable materials; only their colour palette informed the upland tints.
+- **Performance**: chunk meshes are built at most 2 per frame, nearest first; HUD text only updates when it changes; 2 shadow cascades (48 m); on wasm MSAA is off and the shadow map is 1024. Not yet done: merging forest trees into one mesh per chunk, terrain LOD. Untested on real phones.
