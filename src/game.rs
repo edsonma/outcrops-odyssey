@@ -102,6 +102,9 @@ pub struct Input {
     pub page_up_pressed: bool,
     /// Click position in 1280x720 virtual screen space, y-UP.
     pub click: Option<(f32, f32)>,
+    /// Tap/click already resolved to a WORLD position (game units, y-up). Used by
+    /// front-ends whose camera is not the fixed top-down one (e.g. the Bevy 3D prototype).
+    pub world_click: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -554,6 +557,9 @@ impl Game {
         if let Some((mx, my)) = input.click {
             let (cx, cy) = self.cam();
             self.on_tap(mx + cx, my + cy);
+        }
+        if let Some((wx, wy)) = input.world_click {
+            self.on_tap(wx, wy);
         }
         self.resolve_pending();
         if input.interact_pressed {
@@ -2218,5 +2224,20 @@ mod tests {
         let expect = g.region.units[crato].fossil_pct as f32 / 100.0;
         let rate = fossils as f32 / n as f32;
         assert!((rate - expect).abs() < 0.03, "fossil rate {rate}, expected {expect}");
+    }
+
+    #[test]
+    fn world_click_behaves_like_a_screen_click_at_the_same_spot() {
+        let mut a = new_game(7);
+        let o = walk_to_first_outcrop(&mut a);
+        a.player.x = o.x + 20.0;
+        a.tick(&Input { world_click: Some((o.x, o.y)), ..idle() });
+        assert_eq!(a.cards.len(), 1);
+
+        let mut b = new_game(1);
+        exploring_at(&mut b, 700.0, 700.0);
+        b.chunks.values_mut().for_each(|c| c.outcrops.clear());
+        b.tick(&Input { world_click: Some((900.0, 700.0)), ..idle() });
+        assert_eq!(b.move_target, Some((900.0, 700.0)));
     }
 }

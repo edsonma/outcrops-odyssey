@@ -116,6 +116,7 @@ server.js         zero-dependency static server used on Railway
 Dockerfile        builds the wasm, then serves it with server.js
 railway.json      Railway config (Dockerfile build, /healthz health check)
 .github/workflows CI: cargo test + wasm build
+bevy-prototype/   3D renderer prototype (Bevy) reusing src/game.rs + src/world.rs — see its README
 project/          the original DragonRuby prototype, kept for reference only
 ```
 
