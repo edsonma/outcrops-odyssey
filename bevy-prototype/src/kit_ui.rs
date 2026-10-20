@@ -144,8 +144,8 @@ pub fn setup_kit_ui(mut commands: Commands) {
                 text(root, PackText::Label(i), 22.0, rx + 16.0, ry + rh * 0.48, rw - 32.0);
                 text(root, PackText::Detail(i), 15.0, rx + 16.0, ry + 3.0, rw - 32.0);
             }
-            text(root, PackText::Msg, 22.0, px + 28.0, py + 14.0, pw - 56.0);
-            text(root, PackText::Footer, 16.0, px, py - 34.0, pw);
+            text(root, PackText::Msg, 22.0, px + 28.0, py + 70.0, pw - 56.0);
+            text(root, PackText::Footer, 16.0, px + 28.0, py + 24.0, pw - 56.0);
         });
 }
 

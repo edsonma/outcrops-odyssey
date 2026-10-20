@@ -14,7 +14,9 @@ Built on **Bevy 0.19** (0.20 needs rustc 1.97.1; switch whenever your toolchain 
 | **Lighting** | One `DirectionalLight` sun with 3-cascade shadows, driven by the game clock (05:00→18:00: rises east, sets west, warm at the horizon, fades at night), plus `GlobalAmbientLight`, `DistanceFog` and `TonyMcMapface` tonemapping. The campfire is a flickering `PointLight`. |
 | **Materials** | Real PBR: Poly Haven (CC0) albedo + normal + roughness maps for grass, rock and moss, tiled with `uv_transform`; normal/roughness maps are loaded as *linear*, albedo as *sRGB*. Raw outcrops glow faintly, visited ones turn mossy. |
 | **Assets** | Trees are a **glTF binary** (`assets/models/tree.glb#Scene0`, spawned with `WorldAssetRoot`). Replace it with any Blender export (`File → Export → glTF 2.0 → .glb`) and nothing else changes. Rocks are procedural displaced icospheres. |
-| **World** | Chunks spawn/despawn around the camera focus; roads, dashes, dirt patches, camp, truck and player are built from the game state every frame. |
+| **Terrain** | `src/terrain_view.rs` turns `../src/terrain.rs` into a 3D heightfield: hills and valleys (vertical scale 1.25x), lakes and shallow rivers (translucent water), cliffs (rock texture), dense forest (glTF trees), fenced farms with crop rows, and a dark border outside the surveyed map. Roads, the camp yard and farm plots are draped over the same height function. Clicks are ray-cast against the terrain. |
+| **Kit & backpack** | `src/kit_ui.rs`: energy and water bars, pickaxe/food/unit/elevation lines, the backpack & camp-store panel (**B**, Up/Down, Enter or click), and on-screen PACK / TRUCK / FILL-EAT / BREAK buttons for touch. Same rules as Macroquad (`kit.rs`, `game.rs`). |
+| **World** | Chunks and farm plots spawn/despawn around the camera focus; the camp is rebuilt when the map (region) changes. |
 
 Scale: 1 game unit = 0.025 m, so a chunk is 16 m, the player ~2 m, a road 3 m wide.
 
@@ -26,8 +28,8 @@ cargo run --release          # first build compiles Bevy: ~10-40 min depending o
 ```
 
 Controls: WASD/arrows, click/tap the ground, SPACE or click a rock to break it, **E** board / call
-the truck, **V** camera. (On-screen touch buttons are not ported yet — `../src/touch.rs` is
-engine-independent and can be reused; taps already work.)
+the truck, **F** fill bottle / eat, **B** backpack, **V** camera. Touch: tap, plus the on-screen buttons
+(no virtual stick yet; `../src/touch.rs` is engine-independent and can be reused).
 
 ## Build for the browser
 
@@ -66,6 +68,12 @@ For WebGPU, set the build arg `CARGO_FEATURES=--no-default-features --features w
   it on mobile data before deciding to migrate.
 - WebGL2 limits apply (no compute-based effects); effects that need WebGPU should be treated as
   optional.
+
+## Not ported yet (still Macroquad-only)
+
+Contour lines and the geological **map** screen (M), the **cards** screen (C), sprite art, the
+virtual joystick, region-complete / level-change screens, and the game-over / sleep overlays.
+Region changes do rebuild the 3D world, but that path has not been exercised visually.
 
 ## Next steps if it wins the comparison
 

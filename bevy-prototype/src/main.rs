@@ -739,10 +739,10 @@ fn update_environment(
         *tf = Transform::from_translation(to_sun * 50.0).looking_at(Vec3::ZERO, Vec3::Y);
         // the light fades less than the sky does, so dawn/dusk stay readable
         let dark = (night / 0.85).clamp(0.0, 1.0);
-        light.illuminance = 13_000.0 * (1.0 - dark * 0.9) * (0.55 + 0.45 * elevation.sin());
+        light.illuminance = 15_000.0 * (1.0 - dark * 0.9) * (0.7 + 0.3 * elevation.sin());
         light.color = Color::srgb(sun_color.x, sun_color.y, sun_color.z);
     }
-    ambient.brightness = 120.0 + 480.0 * (1.0 - (night / 0.85).clamp(0.0, 1.0));
+    ambient.brightness = 260.0 + 440.0 * (1.0 - (night / 0.85).clamp(0.0, 1.0));
     ambient.color = {
         let c = lerp_color(Vec3::new(0.75, 0.83, 1.0), Vec3::new(0.35, 0.42, 0.8), night / 0.85);
         Color::srgb(c.x, c.y, c.z)
@@ -788,7 +788,7 @@ fn update_hud(
             lines.push("Water - EMPTY".into());
         }
         lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
-        t.0 = ascii(&lines.join("\n"));
+        t.0 = if g.ui_mode == UiMode::Backpack { String::new() } else { ascii(&lines.join("\n")) };
     }
     if let Ok(mut t) = hint.single_mut() {
         t.0 = match g.phase {
@@ -816,7 +816,7 @@ fn update_hud(
 // ================================================================ DEV HOOKS
 // OO_DEMO=camp|field|noon|sunset|night|road  scripts a scene;  OO_SHOT=/path.png [OO_SHOT_FRAMES=n]
 // saves a screenshot after n frames and exits. Handy for headless visual checks; harmless otherwise.
-fn dev_hooks(mut commands: Commands, mut game: ResMut<GameRes>, mut frame: Local<u32>) {
+fn dev_hooks(mut commands: Commands, mut game: ResMut<GameRes>, mut frame: Local<u32>, mut cam: ResMut<CamMode>) {
     use bevy::render::view::screenshot::{save_to_disk, Screenshot};
     *frame += 1;
     let g = &mut game.0;
@@ -865,6 +865,13 @@ fn dev_hooks(mut commands: Commands, mut game: ResMut<GameRes>, mut frame: Local
                     g.apples = 2;
                     g.ui_mode = UiMode::Backpack;
                 }
+            }
+            // OO_CLOCK=<hour> sets the time of day, OO_CAM=side picks the side-on camera
+            if let Some(h) = std::env::var("OO_CLOCK").ok().and_then(|v| v.parse::<u32>().ok()) {
+                g.clock_ticks = (h.max(5) - 5) * 60 * TICKS_PER_MINUTE;
+            }
+            if std::env::var("OO_CAM").as_deref() == Ok("side") {
+                *cam = CamMode::Side;
             }
             match scene.as_str() {
                 "noon" => g.clock_ticks = 7 * 60 * TICKS_PER_MINUTE,
