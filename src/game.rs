@@ -5,6 +5,7 @@
 //! main roads to the drop point -> explore and break outcrops -> reach a main
 //! road before sunset (or lose) -> truck drives back -> sleep -> next morning.
 
+use crate::kit::*;
 use crate::terrain::{effort_factor, speed_factor, Ground, Terrain};
 use crate::world::*;
 use std::collections::{HashMap, HashSet};
@@ -16,7 +17,6 @@ pub const PLAYER_H: f32 = 80.0;
 pub const PLAYER_SPEED: f32 = 4.2;
 pub const BREAK_RANGE: f32 = 60.0;
 pub const CARDS_PER_PAGE: usize = 8;
-pub const INVENTORY_CAP: u32 = 10;
 pub const POPUP_LIFE: i32 = 70;
 
 // Time: the field day runs 05:00 -> 18:00 (sunset). 25 ticks = 1 game minute,
@@ -24,6 +24,7 @@ pub const POPUP_LIFE: i32 = 70;
 pub const TICKS_PER_MINUTE: u32 = 25;
 pub const DAY_START_MIN: u32 = 5 * 60;
 pub const SUNSET_MIN: u32 = 18 * 60;
+/// Lunch time: the cue to find a tree and eat something.
 pub const SUPPLY_MIN: u32 = 12 * 60;
 
 pub const TRUCK_SPEED: f32 = 16.0;
@@ -31,7 +32,6 @@ pub const BOARD_RANGE: f32 = 150.0;
 pub const SLEEP_TICKS: u32 = 220;
 pub const ENERGY_MAX: f32 = 100.0;
 pub const ENERGY_DRAIN_PER_TICK: f32 = 0.008;
-pub const SUPPLY_ENERGY: f32 = 50.0;
 pub const DROP_SIDE_OFFSET: f32 = 140.0;
 
 /// An action queued by tapping something far away: walk there, then do it.
@@ -40,15 +40,29 @@ pub enum Pending {
     None,
     Break(String),
     Board,
+    /// Walk to water, then fill the bottle.
+    Fill,
+    /// Walk to a tree, then eat in its shade.
+    Eat,
 }
 
 pub const TAP_PICK_RADIUS: f32 = 55.0;
+
+/// Overlay panel (x, y-bottom, w, h) in the 1280x720 y-up virtual screen.
+pub const PANEL: (f32, f32, f32, f32) = (190.0, 60.0, 900.0, 600.0);
+pub const PACK_ROW_H: f32 = 50.0;
+/// Bottom-left rect of backpack menu row `i`.
+pub fn pack_row_rect(i: usize) -> (f32, f32, f32, f32) {
+    let (px, py, pw, ph) = PANEL;
+    (px + 24.0, py + ph - 120.0 - 56.0 * i as f32, pw - 48.0, PACK_ROW_H)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UiMode {
     None,
     Map,
     Cards,
+    Backpack,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,6 +91,9 @@ pub struct Input {
     pub down: bool,
     pub map_pressed: bool,
     pub cards_pressed: bool,
+    pub pack_pressed: bool,
+    /// Context action: fill the bottle at water, eat under a tree.
+    pub use_pressed: bool,
     pub space_pressed: bool,
     pub interact_pressed: bool,
     pub restart_pressed: bool,
@@ -148,6 +165,7 @@ pub struct Game {
     /// Ticks of field time since 05:00 (only advances while exploring).
     pub clock_ticks: u32,
     pub energy: f32,
+    /// Lunch-time cue already shown today.
     pub supply_given: bool,
     pub route: Vec<(f32, f32)>,
     pub route_idx: usize,
@@ -155,7 +173,15 @@ pub struct Game {
     pub banner: Option<(String, i32)>,
     pub outcrop_points: u32,
     pub xp: u32,
+    /// Bonus rocks carried (they share the backpack's slots with food).
     pub inventory_count: u32,
+    pub water: f32,
+    pub water_warned: bool,
+    pub pickaxe: Pickaxe,
+    pub apples: u32,
+    pub sandwiches: u32,
+    pub pack_sel: usize,
+    pub pack_msg: Option<(String, i32)>,
     pub popups: Vec<Popup>,
     pub cards: Vec<Card>,
     pub ui_mode: UiMode,
@@ -194,6 +220,13 @@ impl Game {
             outcrop_points: 0,
             xp: 10,
             inventory_count: 0,
+            water: WATER_MAX,
+            water_warned: false,
+            pickaxe: Pickaxe::new(0),
+            apples: 0,
+            sandwiches: 0,
+            pack_sel: 0,
+            pack_msg: None,
             popups: Vec::new(),
             cards: Vec::new(),
             ui_mode: UiMode::None,
@@ -209,6 +242,7 @@ impl Game {
             block_cooldown: 0,
             game_over_stats: None,
         };
+        g.issue_daily_kit();
         g.set_banner("Day 1 - Basecamp".to_string());
         g
     }
@@ -275,6 +309,12 @@ impl Game {
             p.life -= 1;
         }
         self.popups.retain(|p| p.life > 0);
+        if let Some((_, life)) = &mut self.pack_msg {
+            *life -= 1;
+            if *life <= 0 {
+                self.pack_msg = None;
+            }
+        }
         if let Some((_, life)) = &mut self.banner {
             *life -= 1;
             if *life <= 0 {
@@ -356,6 +396,7 @@ impl Game {
         self.clock_ticks = 0;
         self.energy = ENERGY_MAX;
         self.supply_given = false;
+        self.issue_daily_kit();
         self.player.x = CAMP_SPAWN.0;
         self.player.y = CAMP_SPAWN.1;
         self.move_target = None;
@@ -368,9 +409,13 @@ impl Game {
 
         if !self.supply_given && self.minutes_of_day() >= SUPPLY_MIN {
             self.supply_given = true;
-            self.energy = (self.energy + SUPPLY_ENERGY).min(ENERGY_MAX);
-            self.set_banner(format!("12:00 - Supplies delivered! +{} energy", SUPPLY_ENERGY as i32));
+            self.set_banner("12:00 - Lunch break: find a tree and eat something".to_string());
         }
+
+        // the bottle slowly empties out in the field
+        let before = self.water;
+        self.water = (self.water - WATER_DRAIN_IDLE).max(0.0);
+        self.warn_if_thirsty(before);
 
         if self.minutes_of_day() >= SUNSET_MIN {
             if self.player_on_road() {
@@ -422,7 +467,16 @@ impl Game {
         if input.cards_pressed {
             self.ui_mode = if self.ui_mode == UiMode::Cards { UiMode::None } else { UiMode::Cards };
         }
+        if input.pack_pressed && (self.ui_mode == UiMode::Backpack || (self.ui_mode == UiMode::None && self.player_visible())) {
+            self.ui_mode = if self.ui_mode == UiMode::Backpack { UiMode::None } else { UiMode::Backpack };
+            self.pack_sel = 0;
+            self.pack_msg = None;
+        }
         match self.ui_mode {
+            UiMode::Backpack => {
+                self.handle_backpack_input(input);
+                return;
+            }
             UiMode::Cards => {
                 let pages = self.total_card_pages();
                 if input.page_down_pressed {
@@ -450,6 +504,9 @@ impl Game {
         self.resolve_pending();
         if input.interact_pressed {
             self.interact();
+        }
+        if input.use_pressed {
+            self.use_context();
         }
         if input.space_pressed && self.phase == Phase::Exploring {
             self.break_nearest_outcrop();
@@ -485,6 +542,28 @@ impl Game {
             }
             return;
         }
+        if self.phase == Phase::Exploring {
+            if self.terrain.ground(wx, wy).is_water() {
+                if self.near_water() {
+                    self.fill_bottle();
+                } else {
+                    self.move_target = Some((wx, wy));
+                    self.pending = Pending::Fill;
+                }
+                return;
+            }
+            if let Some((tx, ty)) = self.tree_at(wx, wy) {
+                if self.near_tree() {
+                    self.eat_best();
+                } else {
+                    let (vx, vy) = (self.player.x - tx, self.player.y - ty);
+                    let len = (vx * vx + vy * vy).sqrt().max(1.0);
+                    self.move_target = Some((tx + vx / len * 60.0, ty + vy / len * 60.0));
+                    self.pending = Pending::Eat;
+                }
+                return;
+            }
+        }
         self.move_target = Some((wx, wy));
     }
 
@@ -506,6 +585,22 @@ impl Game {
                 if self.near_truck() {
                     self.pending = Pending::None;
                     self.start_truck_out();
+                } else if self.move_target.is_none() {
+                    self.pending = Pending::None;
+                }
+            }
+            Pending::Fill => {
+                if self.near_water() {
+                    self.pending = Pending::None;
+                    self.fill_bottle();
+                } else if self.move_target.is_none() {
+                    self.pending = Pending::None;
+                }
+            }
+            Pending::Eat => {
+                if self.near_tree() {
+                    self.pending = Pending::None;
+                    self.eat_best();
                 } else if self.move_target.is_none() {
                     self.pending = Pending::None;
                 }
@@ -547,7 +642,14 @@ impl Game {
     }
 
     fn current_speed(&self) -> f32 {
-        if self.energy <= 0.0 { PLAYER_SPEED * 0.5 } else { PLAYER_SPEED }
+        let mut s = PLAYER_SPEED;
+        if self.energy <= 0.0 {
+            s *= 0.5;
+        }
+        if self.phase == Phase::Exploring && self.water <= 0.0 {
+            s *= DEHYDRATED_SPEED;
+        }
+        s
     }
 
     /// Elevation (m) under the player.
@@ -639,7 +741,11 @@ impl Game {
             self.player.y = self.player.y.clamp(-ROAD_W / 2.0 - 40.0, CAMP.3 + 60.0);
         } else if on_foot_in_field {
             let moved = ((self.player.x - ox).powi(2) + (self.player.y - oy).powi(2)).sqrt();
-            self.energy = (self.energy - moved * ENERGY_DRAIN_PER_TICK / PLAYER_SPEED * effort).max(0.0);
+            let thirst = if self.water <= 0.0 { DEHYDRATED_EFFORT } else { 1.0 };
+            self.energy = (self.energy - moved * ENERGY_DRAIN_PER_TICK / PLAYER_SPEED * effort * thirst).max(0.0);
+            let before = self.water;
+            self.water = (self.water - moved / PLAYER_SPEED * WATER_DRAIN_WALK * effort).max(0.0);
+            self.warn_if_thirsty(before);
         }
     }
 
@@ -679,10 +785,15 @@ impl Game {
 
     pub fn break_outcrop(&mut self, o: &Outcrop) {
         let o = o.clone();
-        if !self.visited.insert(o.id.clone()) {
+        if self.visited.contains(&o.id) {
             self.spawn_popup(o.x, o.y, "Already surveyed", (130, 130, 130));
             return;
         }
+        if self.pickaxe.broken() {
+            self.spawn_popup(o.x, o.y + 20.0, "Pickaxe broken! Open the pack (B) for a new one", (255, 170, 120));
+            return;
+        }
+        self.visited.insert(o.id.clone());
 
         self.outcrop_points += 10;
         self.xp += 20;
@@ -691,7 +802,7 @@ impl Game {
         let mineral = self.rng.below(100) < 5;
         let fossil = self.rng.below(100) < 5;
         let bonus_roll = self.rng.below(100) < 5;
-        let bonus_rock = bonus_roll && self.inventory_count < INVENTORY_CAP;
+        let bonus_rock = bonus_roll && self.backpack_used() < BACKPACK_SLOTS;
 
         if mineral {
             self.xp += 10;
@@ -722,6 +833,306 @@ impl Game {
         }
         if bonus_rock {
             self.spawn_popup(o.x, o.y + 98.0, "Bonus rock collected", (200, 255, 200));
+        }
+        if self.pickaxe.wear(rock_hardness(o.lithology)) {
+            self.spawn_popup(o.x, o.y + 124.0, "Your pickaxe broke!", (255, 150, 110));
+        }
+    }
+
+    // ------------------------------------------------------------------- kit
+    /// Morning issue: a full bottle, one piece of food (if there is room) and,
+    /// if yesterday's pickaxe broke, a fresh basic one so nobody is stuck.
+    fn issue_daily_kit(&mut self) {
+        self.water = WATER_MAX;
+        self.water_warned = false;
+        if self.pickaxe.broken() {
+            self.pickaxe = Pickaxe::new(0);
+        }
+        if self.backpack_used() < BACKPACK_SLOTS {
+            if self.rng.below(2) == 0 {
+                self.apples += 1;
+            } else {
+                self.sandwiches += 1;
+            }
+        }
+    }
+
+    /// Slots in use: bonus rocks and food share the backpack.
+    pub fn backpack_used(&self) -> u32 {
+        self.inventory_count + self.apples + self.sandwiches
+    }
+
+    pub fn dehydrated(&self) -> bool {
+        self.water <= 0.0
+    }
+
+    fn warn_if_thirsty(&mut self, before: f32) {
+        if before > 0.0 && self.water <= 0.0 {
+            self.spawn_popup(self.player.x, self.player.y + 60.0, "Bottle empty - find a lake or river!", (150, 200, 255));
+        } else if !self.water_warned && self.water <= 20.0 {
+            self.water_warned = true;
+            self.set_banner("Water is running low - look for a lake or river".to_string());
+        }
+    }
+
+    /// Is a lake or river within reach of the bottle?
+    pub fn near_water(&self) -> bool {
+        let (px, py) = (self.player.x, self.player.y);
+        if self.terrain.ground(px, py).is_water() {
+            return true;
+        }
+        for r in [30.0, 55.0, WATER_REACH] {
+            for k in 0..12 {
+                let a = k as f32 * std::f32::consts::TAU / 12.0;
+                if self.terrain.ground(px + a.cos() * r, py + a.sin() * r).is_water() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// A tree (or the edge of a dense forest) close enough to sit in its shade.
+    pub fn near_tree(&self) -> bool {
+        let (px, py) = (self.player.x, self.player.y);
+        let (cx, cy) = world_to_chunk(px, py);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(c) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    if c.trees.iter().any(|t| ((t.x - px).powi(2) + (t.y - py).powi(2)).sqrt() <= TREE_REACH) {
+                        return true;
+                    }
+                }
+            }
+        }
+        (0..8).any(|k| {
+            let a = k as f32 * std::f32::consts::TAU / 8.0;
+            self.terrain.ground(px + a.cos() * 70.0, py + a.sin() * 70.0) == Ground::Forest
+        })
+    }
+
+    /// The standalone tree under a tap, if any (the crown sits above the base).
+    fn tree_at(&self, wx: f32, wy: f32) -> Option<(f32, f32)> {
+        let (cx, cy) = world_to_chunk(wx, wy);
+        let mut best: Option<((f32, f32), f32)> = None;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(c) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    for t in &c.trees {
+                        let d = ((t.x - wx).powi(2) + (t.y + 45.0 - wy).powi(2)).sqrt();
+                        if d <= 75.0 && best.map_or(true, |(_, bd)| d < bd) {
+                            best = Some(((t.x, t.y), d));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(p, _)| p)
+    }
+
+    fn can_eat_here(&self) -> bool {
+        self.phase == Phase::Basecamp || self.near_tree()
+    }
+
+    pub fn fill_bottle(&mut self) {
+        if self.water >= WATER_MAX - 0.5 {
+            self.spawn_popup(self.player.x, self.player.y + 60.0, "Bottle already full", (200, 220, 240));
+        } else {
+            self.water = WATER_MAX;
+            self.water_warned = false;
+            self.spawn_popup(self.player.x, self.player.y + 60.0, "Bottle filled", (150, 210, 255));
+        }
+    }
+
+    fn eat(&mut self, sandwich: bool) {
+        let gain = if sandwich {
+            self.sandwiches -= 1;
+            SANDWICH_ENERGY
+        } else {
+            self.apples -= 1;
+            APPLE_ENERGY
+        };
+        let before = self.energy;
+        self.energy = (self.energy + gain).min(ENERGY_MAX);
+        let text = format!("{} - +{} energy", if sandwich { "Sandwich" } else { "Apple" }, (self.energy - before).round() as i32);
+        self.spawn_popup(self.player.x, self.player.y + 60.0, &text, (190, 240, 160));
+    }
+
+    /// Eat whatever suits how tired you are, if you are in the shade.
+    pub fn eat_best(&mut self) {
+        let (px, py) = (self.player.x, self.player.y + 60.0);
+        if !self.can_eat_here() {
+            self.spawn_popup(px, py, "Find a tree to sit and eat in the shade", (255, 210, 150));
+        } else if self.apples + self.sandwiches == 0 {
+            self.spawn_popup(px, py, "No food left", (255, 210, 150));
+        } else if self.energy > NOT_HUNGRY_ABOVE {
+            self.spawn_popup(px, py, "Not hungry yet", (220, 220, 220));
+        } else {
+            let missing = ENERGY_MAX - self.energy;
+            let sandwich = self.sandwiches > 0 && (self.apples == 0 || missing >= 35.0);
+            self.eat(sandwich);
+        }
+    }
+
+    /// The F / USE button: fill the bottle at water, otherwise eat under a tree.
+    pub fn use_context(&mut self) {
+        if self.near_water() && self.water < WATER_MAX - 0.5 {
+            self.fill_bottle();
+        } else if self.phase == Phase::Basecamp && self.water < WATER_MAX - 0.5 {
+            self.fill_bottle();
+        } else if self.near_water() {
+            self.fill_bottle(); // full: says so
+        } else {
+            self.eat_best();
+        }
+    }
+
+    // ----------------------------------------------------------- backpack menu
+    pub fn pack_rows(&self) -> Vec<PackRow> {
+        let camp = self.phase == Phase::Basecamp;
+        let pts = self.outcrop_points;
+        let full = self.backpack_used() >= BACKPACK_SLOTS;
+        let row = |action, label: String, detail: &str, enabled| PackRow { action, label, detail: detail.to_string(), enabled };
+        let mut rows = Vec::new();
+
+        // water
+        let (d, ok) = if self.water >= WATER_MAX - 0.5 {
+            ("Bottle is full", false)
+        } else if camp {
+            ("Refill from the camp tank (free)", true)
+        } else if self.near_water() {
+            ("Fill from the water", true)
+        } else {
+            ("Find a lake or river", false)
+        };
+        rows.push(row(Action::RefillWater, format!("Water bottle   {:.0}/{:.0}", self.water, WATER_MAX), d, ok));
+
+        // pickaxe
+        let pick = format!("Pickaxe: {}   {}/{}", self.pickaxe.name(), self.pickaxe.durability, self.pickaxe.max_durability());
+        if self.pickaxe.broken() {
+            let ok = pts >= PICK_REPLACE_COST;
+            rows.push(row(Action::ReplacePickaxe, format!("{pick}  BROKEN"), &format!("Buy a new basic pickaxe - {PICK_REPLACE_COST} pts{}", if ok { "" } else { " (not enough points)" }), ok));
+        } else {
+            rows.push(row(Action::ReplacePickaxe, pick, "In working order", false));
+        }
+        match self.pickaxe.next_tier() {
+            Some((name, cost)) => {
+                let (d, ok) = if !camp {
+                    (format!("{cost} pts - upgrades are done at basecamp"), false)
+                } else if pts < cost {
+                    (format!("{cost} pts (not enough points)"), false)
+                } else {
+                    (format!("{cost} pts - a tougher pickaxe, fully repaired"), true)
+                };
+                rows.push(row(Action::UpgradePickaxe, format!("Upgrade to {name}"), &d, ok));
+            }
+            None => rows.push(row(Action::UpgradePickaxe, "Pickaxe fully upgraded".to_string(), "Best tool available", false)),
+        }
+
+        // food
+        let eat_state = |count: u32, gain: f32| -> (String, bool) {
+            if count == 0 {
+                ("None left".to_string(), false)
+            } else if !self.can_eat_here() {
+                ("Find a tree to eat in the shade".to_string(), false)
+            } else if self.energy > NOT_HUNGRY_ABOVE {
+                ("Not hungry yet".to_string(), false)
+            } else {
+                (format!("Restores {gain:.0} energy"), true)
+            }
+        };
+        let (d, ok) = eat_state(self.apples, APPLE_ENERGY);
+        rows.push(row(Action::EatApple, format!("Eat apple   x{}", self.apples), &d, ok));
+        let (d, ok) = eat_state(self.sandwiches, SANDWICH_ENERGY);
+        rows.push(row(Action::EatSandwich, format!("Eat sandwich   x{}", self.sandwiches), &d, ok));
+
+        // store
+        let buy_state = |price: u32| -> (String, bool) {
+            if !camp {
+                (format!("{price} pts - sold at basecamp"), false)
+            } else if full {
+                ("Backpack is full".to_string(), false)
+            } else if pts < price {
+                (format!("{price} pts (not enough points)"), false)
+            } else {
+                (format!("{price} pts"), true)
+            }
+        };
+        let (d, ok) = buy_state(APPLE_PRICE);
+        rows.push(row(Action::BuyApple, "Buy an apple".to_string(), &d, ok));
+        let (d, ok) = buy_state(SANDWICH_PRICE);
+        rows.push(row(Action::BuySandwich, "Buy a sandwich".to_string(), &d, ok));
+        rows
+    }
+
+    fn handle_backpack_input(&mut self, input: &Input) {
+        let n = ACTIONS.len();
+        if input.page_down_pressed {
+            self.pack_sel = (self.pack_sel + 1) % n;
+        }
+        if input.page_up_pressed {
+            self.pack_sel = (self.pack_sel + n - 1) % n;
+        }
+        let mut activate = input.interact_pressed || input.space_pressed || input.restart_pressed;
+        if let Some((mx, my)) = input.click {
+            for i in 0..n {
+                let (x, y, w, h) = pack_row_rect(i);
+                if mx >= x && mx <= x + w && my >= y && my <= y + h {
+                    self.pack_sel = i;
+                    activate = true;
+                }
+            }
+        }
+        if activate {
+            self.run_pack_action(self.pack_sel);
+        }
+    }
+
+    fn pack_notice(&mut self, text: &str) {
+        self.pack_msg = Some((text.to_string(), 150));
+    }
+
+    pub fn run_pack_action(&mut self, idx: usize) {
+        let rows = self.pack_rows();
+        let Some(row) = rows.get(idx).cloned() else { return };
+        if !row.enabled {
+            self.pack_notice(&row.detail);
+            return;
+        }
+        match row.action {
+            Action::RefillWater => {
+                self.water = WATER_MAX;
+                self.water_warned = false;
+                self.pack_notice("Bottle filled");
+            }
+            Action::ReplacePickaxe => {
+                self.outcrop_points -= PICK_REPLACE_COST;
+                self.pickaxe = Pickaxe::new(0);
+                self.pack_notice(&format!("New pickaxe! -{PICK_REPLACE_COST} pts"));
+            }
+            Action::UpgradePickaxe => {
+                if let Some((name, cost)) = self.pickaxe.next_tier() {
+                    self.outcrop_points -= cost;
+                    self.pickaxe = Pickaxe::new(self.pickaxe.tier + 1);
+                    self.pack_notice(&format!("Upgraded to {name}! -{cost} pts"));
+                }
+            }
+            Action::EatApple | Action::EatSandwich => {
+                let sandwich = row.action == Action::EatSandwich;
+                let before = self.energy;
+                self.eat(sandwich);
+                self.pack_notice(&format!("+{} energy", (self.energy - before).round() as i32));
+            }
+            Action::BuyApple => {
+                self.outcrop_points -= APPLE_PRICE;
+                self.apples += 1;
+                self.pack_notice(&format!("Bought an apple -{APPLE_PRICE} pts"));
+            }
+            Action::BuySandwich => {
+                self.outcrop_points -= SANDWICH_PRICE;
+                self.sandwiches += 1;
+                self.pack_notice(&format!("Bought a sandwich -{SANDWICH_PRICE} pts"));
+            }
         }
     }
 
@@ -876,19 +1287,16 @@ mod tests {
     }
 
     #[test]
-    fn noon_supply_restores_energy_once() {
+    fn lunch_is_announced_once_but_gives_no_free_energy() {
         let mut g = new_game(3);
         exploring_at(&mut g, 700.0, 700.0);
         g.energy = 10.0;
         g.clock_ticks = (SUPPLY_MIN - DAY_START_MIN) * TICKS_PER_MINUTE - 1;
         g.tick(&idle());
         g.tick(&idle());
-        assert!((g.energy - 60.0).abs() < 0.5, "{}", g.energy);
-        let e = g.energy;
-        for _ in 0..500 {
-            g.tick(&idle());
-        }
-        assert!((g.energy - e).abs() < 0.01);
+        assert!(g.supply_given);
+        assert!(g.banner.as_ref().is_some_and(|(t, _)| t.contains("Lunch")));
+        assert!((g.energy - 10.0).abs() < 0.01, "{}", g.energy);
     }
 
     #[test]
@@ -978,15 +1386,16 @@ mod tests {
         let n = 20_000;
         for i in 0..n {
             g.visited.clear();
+            g.pickaxe.durability = 99; // this test is about drop rates, not tool wear
             let o = Outcrop { id: format!("t{i}"), x: 0.0, y: 0.0, lithology: "Igneous" };
             g.chunks.insert((0, 0), Chunk { grass_variant: 0, outcrops: vec![o], trees: vec![], dirt_patches: vec![] });
             g.break_nearest_outcrop();
             minerals += g.cards.last().unwrap().mineral as u32;
-            assert!(g.inventory_count <= INVENTORY_CAP);
+            assert!(g.backpack_used() <= BACKPACK_SLOTS);
         }
         let rate = minerals as f32 / n as f32;
         assert!((0.04..0.06).contains(&rate), "rate {rate}");
-        assert_eq!(g.inventory_count, INVENTORY_CAP);
+        assert_eq!(g.backpack_used(), BACKPACK_SLOTS, "bonus rocks fill whatever the food leaves free");
     }
 
     #[test]
@@ -1227,5 +1636,401 @@ mod tests {
         g.phase = Phase::GameOver;
         g.tick(&Input { restart_pressed: true, ..idle() });
         assert_eq!(g.terrain.relief, 1.25);
+    }
+
+    // ----------------------------------------------------------------- kit
+    fn lone_outcrop(g: &mut Game, id: &str, lithology: &'static str) -> Outcrop {
+        let o = Outcrop { id: id.into(), x: 700.0, y: 700.0, lithology };
+        g.player.x = 700.0;
+        g.player.y = 700.0;
+        g.chunks.insert((1, 1), Chunk { grass_variant: 0, outcrops: vec![o.clone()], trees: vec![], dirt_patches: vec![] });
+        o
+    }
+
+    fn press(g: &mut Game, f: impl Fn(&mut Input)) {
+        let mut i = idle();
+        f(&mut i);
+        g.tick(&i);
+    }
+
+    #[test]
+    fn each_day_starts_with_a_full_bottle_one_food_and_a_pickaxe() {
+        let mut g = new_game(4);
+        assert_eq!(g.water, WATER_MAX);
+        assert_eq!(g.apples + g.sandwiches, 1);
+        assert_eq!((g.pickaxe.tier, g.pickaxe.durability), (0, 15));
+        // spend things, sleep, and the kit is reissued
+        g.water = 3.0;
+        g.pickaxe.durability = 0;
+        g.phase = Phase::Sleeping;
+        g.sleep_timer = SLEEP_TICKS;
+        g.tick(&idle());
+        assert_eq!(g.day, 2);
+        assert_eq!(g.water, WATER_MAX);
+        assert_eq!(g.pickaxe, Pickaxe::new(0), "a broken pickaxe is replaced free in the morning");
+        assert_eq!(g.apples + g.sandwiches, 2, "yesterday's unused food is kept");
+    }
+
+    #[test]
+    fn the_daily_ration_needs_room_in_the_pack() {
+        let mut g = new_game(4);
+        g.apples = 0;
+        g.sandwiches = 0;
+        g.inventory_count = BACKPACK_SLOTS;
+        g.phase = Phase::Sleeping;
+        g.sleep_timer = SLEEP_TICKS;
+        g.tick(&idle());
+        assert_eq!(g.backpack_used(), BACKPACK_SLOTS);
+    }
+
+    #[test]
+    fn walking_empties_the_bottle_faster_than_standing() {
+        let mut g = new_game(1);
+        exploring_at(&mut g, 700.0, 700.0);
+        for _ in 0..600 {
+            g.tick(&idle());
+        }
+        let idle_loss = WATER_MAX - g.water;
+        assert!(idle_loss > 0.0);
+        let mut g = new_game(1);
+        exploring_at(&mut g, 700.0, 700.0);
+        for _ in 0..600 {
+            g.tick(&Input { right: true, ..idle() });
+        }
+        assert!(WATER_MAX - g.water > idle_loss * 2.0);
+    }
+
+    #[test]
+    fn a_full_day_of_walking_needs_more_than_one_bottle() {
+        // 13 field hours, walking the whole time on the flat
+        let ticks = ((SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE) as f32;
+        let per_tick = WATER_DRAIN_IDLE + WATER_DRAIN_WALK;
+        assert!(ticks * per_tick > WATER_MAX, "one bottle should not last a hard day");
+        assert!(ticks * WATER_DRAIN_IDLE < WATER_MAX, "but resting it would");
+    }
+
+    #[test]
+    fn an_empty_bottle_slows_you_and_burns_more_energy() {
+        let mut a = new_game(1);
+        exploring_at(&mut a, 700.0, 700.0);
+        a.tick(&Input { right: true, ..idle() });
+        let (step_ok, cost_ok) = (a.player.x - 700.0, ENERGY_MAX - a.energy);
+
+        let mut b = new_game(1);
+        exploring_at(&mut b, 700.0, 700.0);
+        b.water = 0.0;
+        b.tick(&Input { right: true, ..idle() });
+        let (step_dry, cost_dry) = (b.player.x - 700.0, ENERGY_MAX - b.energy);
+        assert!(b.dehydrated());
+        assert!((step_dry - step_ok * DEHYDRATED_SPEED).abs() < 1e-3);
+        assert!(cost_dry / step_dry > cost_ok / step_ok * 1.4);
+    }
+
+    fn spot_beside_water(t: &Terrain) -> (f32, f32) {
+        for i in -150..150 {
+            for j in -150..150 {
+                let (x, y) = (i as f32 * 41.0, j as f32 * 43.0);
+                if t.ground(x, y) == Ground::Open && (0..12).any(|k| {
+                    let a = k as f32 * std::f32::consts::TAU / 12.0;
+                    t.ground(x + a.cos() * 50.0, y + a.sin() * 50.0).is_water()
+                }) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("no shoreline found");
+    }
+
+    #[test]
+    fn the_use_key_fills_the_bottle_at_water_only() {
+        let mut g = Game::new(2);
+        let (x, y) = spot_beside_water(&g.terrain);
+        exploring_at(&mut g, 700.0, 700.0);
+        g.water = 10.0;
+        assert!(!g.near_water());
+        press(&mut g, |i| i.use_pressed = true);
+        assert!(g.water < 11.0, "no water here, nothing filled");
+        exploring_at(&mut g, x, y);
+        assert!(g.near_water());
+        press(&mut g, |i| i.use_pressed = true);
+        assert!(g.water > WATER_MAX - 0.1, "{}", g.water); // topped up (then a tick of drain)
+        assert!(g.popups.iter().any(|p| p.text.contains("filled")));
+    }
+
+    #[test]
+    fn tapping_water_walks_to_the_shore_and_fills() {
+        let mut g = Game::new(2);
+        let t = g.terrain.clone();
+        // an open spot with a lake straight to the east, and open ground between
+        let (x, y) = find_spot(&t, |t, x, y| {
+            t.ground(x, y) == Ground::Open && (1..=5).all(|k| t.ground(x + k as f32 * 20.0, y) == Ground::Open) && t.ground(x + 300.0, y) == Ground::Lake
+                && !(0..12).any(|k| {
+                    let a = k as f32 * std::f32::consts::TAU / 12.0;
+                    t.ground(x + a.cos() * 80.0, y + a.sin() * 80.0).is_water()
+                })
+        });
+        exploring_at(&mut g, x, y);
+        g.water = 20.0;
+        let (cx, cy) = g.cam();
+        g.tick(&Input { click: Some((x + 300.0 - cx, y - cy)), ..idle() });
+        assert_eq!(g.pending, Pending::Fill);
+        for _ in 0..200 {
+            g.tick(&idle());
+        }
+        assert!(g.water > 95.0, "{}", g.water);
+        assert_eq!(g.pending, Pending::None);
+        assert!(!g.terrain.blocked(g.player.x, g.player.y));
+    }
+
+    fn tree_beside(g: &mut Game) {
+        let (px, py) = (g.player.x, g.player.y);
+        let (cx, cy) = world_to_chunk(px, py);
+        g.chunks.insert((cx, cy), Chunk { grass_variant: 0, outcrops: vec![], trees: vec![Point { x: px + 60.0, y: py }], dirt_patches: vec![] });
+    }
+
+    #[test]
+    fn eating_needs_a_tree_and_restores_energy_partially() {
+        let mut g = new_game(6);
+        exploring_at(&mut g, 700.0, 700.0);
+        g.chunks.values_mut().for_each(|c| c.trees.clear());
+        g.apples = 1;
+        g.sandwiches = 0;
+        g.energy = 40.0;
+        press(&mut g, |i| i.use_pressed = true);
+        assert_eq!((g.apples, g.energy), (1, 40.0), "no shade, no lunch");
+        tree_beside(&mut g);
+        press(&mut g, |i| i.use_pressed = true);
+        assert_eq!(g.apples, 0);
+        assert!((g.energy - (40.0 + APPLE_ENERGY)).abs() < 0.5, "{}", g.energy);
+        assert!(g.energy < ENERGY_MAX, "partial restore");
+        press(&mut g, |i| i.use_pressed = true);
+        assert!(g.popups.iter().any(|p| p.text.contains("No food")));
+    }
+
+    #[test]
+    fn you_are_not_hungry_when_nearly_full_and_energy_never_overflows() {
+        let mut g = new_game(6);
+        exploring_at(&mut g, 700.0, 700.0);
+        tree_beside(&mut g);
+        g.apples = 1;
+        g.energy = 95.0;
+        press(&mut g, |i| i.use_pressed = true);
+        assert_eq!(g.apples, 1);
+        g.energy = 90.0;
+        press(&mut g, |i| i.use_pressed = true);
+        assert_eq!((g.apples, g.energy), (0, ENERGY_MAX));
+    }
+
+    #[test]
+    fn a_very_tired_geologist_gets_the_sandwich() {
+        let mut g = new_game(6);
+        exploring_at(&mut g, 700.0, 700.0);
+        tree_beside(&mut g);
+        g.apples = 1;
+        g.sandwiches = 1;
+        g.energy = 20.0;
+        press(&mut g, |i| i.use_pressed = true);
+        assert_eq!((g.apples, g.sandwiches), (1, 0));
+        assert!((g.energy - 60.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn tapping_a_tree_walks_there_and_eats() {
+        let mut g = new_game(6);
+        exploring_at(&mut g, 700.0, 700.0);
+        g.chunks.values_mut().for_each(|c| c.trees.clear());
+        g.chunks.insert((1, 1), Chunk { grass_variant: 0, outcrops: vec![], trees: vec![Point { x: 1000.0, y: 700.0 }], dirt_patches: vec![] });
+        g.apples = 1;
+        g.sandwiches = 0;
+        g.energy = 30.0;
+        let (cx, cy) = g.cam();
+        g.tick(&Input { click: Some((1000.0 - cx, 700.0 + 45.0 - cy)), ..idle() });
+        assert_eq!(g.pending, Pending::Eat);
+        for _ in 0..200 {
+            g.tick(&idle());
+        }
+        assert_eq!(g.apples, 0);
+        assert!(g.energy > 30.0);
+    }
+
+    #[test]
+    fn the_edge_of_a_dense_forest_gives_shade_too() {
+        let mut g = Game::new(3);
+        let (x, y) = find_spot(&g.terrain, |t, x, y| {
+            t.ground(x, y) == Ground::Open && t.ground(x + 50.0, y) == Ground::Forest
+        });
+        exploring_at(&mut g, x, y);
+        g.chunks.values_mut().for_each(|c| c.trees.clear());
+        assert!(g.near_tree());
+    }
+
+    #[test]
+    fn breaking_wears_the_pickaxe_by_rock_hardness() {
+        let mut g = new_game(7);
+        exploring_at(&mut g, 700.0, 700.0);
+        let o = lone_outcrop(&mut g, "a", "Igneous");
+        g.break_outcrop(&o);
+        assert_eq!(g.pickaxe.durability, 15 - 2);
+        let o = lone_outcrop(&mut g, "b", "Sedimentary");
+        g.break_outcrop(&o);
+        assert_eq!(g.pickaxe.durability, 15 - 2 - 1);
+        // an outcrop you already surveyed costs nothing
+        g.break_outcrop(&o);
+        assert_eq!(g.pickaxe.durability, 15 - 3);
+    }
+
+    #[test]
+    fn a_broken_pickaxe_cannot_break_rock_until_replaced() {
+        let mut g = new_game(7);
+        exploring_at(&mut g, 700.0, 700.0);
+        g.pickaxe.durability = 1;
+        let o = lone_outcrop(&mut g, "a", "Igneous");
+        g.break_outcrop(&o);
+        assert_eq!(g.cards.len(), 1, "the breaking blow still counts");
+        assert!(g.pickaxe.broken());
+        assert!(g.popups.iter().any(|p| p.text.contains("pickaxe broke")));
+
+        let o2 = lone_outcrop(&mut g, "b", "Sedimentary");
+        g.break_outcrop(&o2);
+        assert_eq!(g.cards.len(), 1);
+        assert!(!g.visited.contains("b"), "still raw: it was not broken");
+
+        // not enough points: replacing is refused
+        g.outcrop_points = PICK_REPLACE_COST - 1;
+        g.ui_mode = UiMode::Backpack;
+        g.run_pack_action(1);
+        assert!(g.pickaxe.broken());
+        assert_eq!(g.outcrop_points, PICK_REPLACE_COST - 1);
+
+        // with the points, a new one is bought on the spot, in the field
+        g.outcrop_points = PICK_REPLACE_COST + 5;
+        g.run_pack_action(1);
+        assert_eq!(g.pickaxe, Pickaxe::new(0));
+        assert_eq!(g.outcrop_points, 5);
+        g.ui_mode = UiMode::None;
+        g.break_outcrop(&o2);
+        assert_eq!(g.cards.len(), 2);
+    }
+
+    #[test]
+    fn upgrades_are_sold_at_basecamp_only_and_deduct_points() {
+        let mut g = new_game(7);
+        g.outcrop_points = 500;
+        g.pickaxe.durability = 3;
+        g.phase = Phase::Exploring;
+        g.run_pack_action(2);
+        assert_eq!((g.pickaxe.tier, g.outcrop_points), (0, 500), "not at basecamp");
+        g.phase = Phase::Basecamp;
+        g.run_pack_action(2);
+        assert_eq!(g.pickaxe, Pickaxe::new(1), "tougher and fully repaired");
+        assert_eq!(g.outcrop_points, 500 - PICK_TIERS[1].cost);
+        g.run_pack_action(2);
+        g.run_pack_action(2);
+        assert_eq!(g.pickaxe.tier, PICK_TIERS.len() - 1);
+        let rows = g.pack_rows();
+        assert!(!rows[2].enabled && rows[2].label.contains("fully upgraded"));
+        let spent: u32 = PICK_TIERS.iter().map(|t| t.cost).sum();
+        assert_eq!(g.outcrop_points, 500 - spent);
+    }
+
+    #[test]
+    fn upgrades_need_enough_points() {
+        let mut g = new_game(7);
+        g.outcrop_points = PICK_TIERS[1].cost - 1;
+        g.run_pack_action(2);
+        assert_eq!(g.pickaxe.tier, 0);
+        assert!(g.pack_msg.is_some());
+    }
+
+    #[test]
+    fn food_is_bought_at_camp_and_respects_points_and_space() {
+        let mut g = new_game(8);
+        g.apples = 0;
+        g.sandwiches = 0;
+        g.outcrop_points = 50;
+        g.run_pack_action(5); // apple
+        g.run_pack_action(6); // sandwich
+        assert_eq!((g.apples, g.sandwiches, g.outcrop_points), (1, 1, 50 - APPLE_PRICE - SANDWICH_PRICE));
+        g.run_pack_action(6); // only 5 points left
+        assert_eq!(g.sandwiches, 1);
+        g.outcrop_points = 1000;
+        g.inventory_count = BACKPACK_SLOTS - g.apples - g.sandwiches;
+        g.run_pack_action(5);
+        assert_eq!(g.backpack_used(), BACKPACK_SLOTS, "backpack is full");
+        assert_eq!(g.outcrop_points, 1000);
+        // not for sale in the field
+        g.inventory_count = 0;
+        g.phase = Phase::Exploring;
+        g.run_pack_action(5);
+        assert_eq!(g.outcrop_points, 1000);
+    }
+
+    #[test]
+    fn bonus_rocks_cannot_take_the_last_slot_from_a_full_pack() {
+        let mut g = new_game(42);
+        g.apples = 0;
+        g.sandwiches = 0;
+        g.inventory_count = BACKPACK_SLOTS;
+        g.player.x = 0.0;
+        g.player.y = 0.0;
+        for i in 0..400 {
+            g.pickaxe.durability = 99;
+            let o = Outcrop { id: format!("r{i}"), x: 0.0, y: 0.0, lithology: "Igneous" };
+            g.chunks.insert((0, 0), Chunk { grass_variant: 0, outcrops: vec![o], trees: vec![], dirt_patches: vec![] });
+            g.break_nearest_outcrop();
+        }
+        assert_eq!(g.backpack_used(), BACKPACK_SLOTS);
+    }
+
+    #[test]
+    fn the_backpack_opens_on_foot_only_and_navigates_by_key_and_tap() {
+        let mut g = new_game(5);
+        press(&mut g, |i| i.pack_pressed = true);
+        assert_eq!(g.ui_mode, UiMode::Backpack);
+        // movement is suspended while it is open
+        let x0 = g.player.x;
+        g.tick(&Input { right: true, ..idle() });
+        assert_eq!(g.player.x, x0);
+        // keyboard selection wraps
+        press(&mut g, |i| i.page_up_pressed = true);
+        assert_eq!(g.pack_sel, ACTIONS.len() - 1);
+        press(&mut g, |i| i.page_down_pressed = true);
+        assert_eq!(g.pack_sel, 0);
+        // tapping a row selects and activates it (apple costs points: none yet)
+        g.outcrop_points = 100;
+        g.apples = 0;
+        let (rx, ry, rw, rh) = pack_row_rect(5);
+        g.tick(&Input { click: Some((rx + rw / 2.0, ry + rh / 2.0)), ..idle() });
+        assert_eq!((g.pack_sel, g.apples), (5, 1));
+        press(&mut g, |i| i.pack_pressed = true);
+        assert_eq!(g.ui_mode, UiMode::None);
+
+        // not while riding the truck
+        g.phase = Phase::TruckOut;
+        press(&mut g, |i| i.pack_pressed = true);
+        assert_eq!(g.ui_mode, UiMode::None);
+    }
+
+    #[test]
+    fn disabled_rows_explain_themselves_instead_of_acting() {
+        let mut g = new_game(5);
+        g.phase = Phase::Exploring;
+        let rows = g.pack_rows();
+        assert_eq!(rows.len(), ACTIONS.len());
+        assert!(rows.iter().all(|r| !r.detail.is_empty()));
+        assert!(!rows[0].enabled && rows[0].detail.contains("full"));
+        g.run_pack_action(5); // buying in the field
+        assert!(g.pack_msg.as_ref().is_some_and(|(t, _)| t.contains("basecamp")));
+    }
+
+    #[test]
+    fn restart_after_game_over_gives_a_fresh_kit() {
+        let mut g = new_game(9);
+        g.water = 1.0;
+        g.pickaxe.durability = 0;
+        g.outcrop_points = 77;
+        g.phase = Phase::GameOver;
+        g.tick(&Input { restart_pressed: true, ..idle() });
+        assert_eq!((g.water, g.pickaxe, g.outcrop_points), (WATER_MAX, Pickaxe::new(0), 0));
     }
 }

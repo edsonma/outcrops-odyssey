@@ -1,4 +1,5 @@
 mod game;
+mod kit;
 mod terrain;
 mod touch;
 mod world;
@@ -11,7 +12,6 @@ use touch::{Tap, TouchState};
 use world::*;
 
 const TICK: f32 = 1.0 / 60.0;
-const PANEL: (f32, f32, f32, f32) = (190.0, 60.0, 900.0, 600.0); // x, y(bottom), w, h
 
 // Provided by web-template/index.html (a miniquad plugin); true on phones/tablets.
 // If the JS side is missing, gl.js stubs the import and it simply returns 0.
@@ -109,6 +109,7 @@ fn render(g: &Game, a: &Assets, touch: bool) {
     match g.ui_mode {
         UiMode::Map => render_map_overlay(g, a),
         UiMode::Cards => render_cards_overlay(g, a),
+        UiMode::Backpack => render_backpack_overlay(g, a),
         UiMode::None => {}
     }
     render_phase_overlays(g, a);
@@ -243,28 +244,37 @@ fn render_terrain(g: &Game, a: &Assets) {
             let avg = (e00 + e10 + e11 + e01) / 4.0;
             let steep = (((e10 + e11 - e00 - e01) / 2.0) / S).hypot(((e01 + e11 - e00 - e10) / 2.0) / S);
             let ground = t.classify(wx + S / 2.0, wy + S / 2.0, avg, steep);
-            let (sx, sy) = (wx - cam_x, wy - cam_y);
+            let (sx, sy) = ((wx - cam_x).round(), (wy - cam_y).round());
             match ground {
                 Ground::Open | Ground::Farm => {
                     let (r, gr, b) = elev_rgb(avg);
-                    solid(sx, sy, S + 1.0, S + 1.0, col(r, gr, b, 70));
+                    solid(sx, sy, S, S, col(r, gr, b, 85));
+                    // hillshade, light from the north-west: slopes facing it brighten, the others darken
+                    let dzdx = ((e10 + e11) - (e00 + e01)) / 2.0 / S;
+                    let dzdy = ((e01 + e11) - (e00 + e10)) / 2.0 / S;
+                    let shade = ((-dzdx + dzdy) * 1.6).clamp(-0.6, 0.6);
+                    if shade > 0.0 {
+                        solid(sx, sy, S, S, col(255, 250, 225, (shade * 120.0) as u8));
+                    } else {
+                        solid(sx, sy, S, S, col(10, 15, 30, (-shade * 150.0) as u8));
+                    }
                 }
                 Ground::Lake => {
                     let k = ((avg / WATER_LEVEL).clamp(0.0, 1.0) * 40.0) as u8;
-                    solid(sx, sy, S + 1.0, S + 1.0, col(36 + k / 2, 92 + k, 160 + k / 2, 240));
+                    solid(sx, sy, S, S, col(36 + k / 2, 92 + k, 160 + k / 2, 240));
                     if tiny_hash(gx0 + i, gy0 + j) > 0.86 {
                         solid(sx + 4.0, sy + 10.0 + shimmer * 2.0, 14.0, 2.0, col(190, 225, 250, 120));
                     }
                 }
-                Ground::River => solid(sx, sy, S + 1.0, S + 1.0, col(88, 154, 210, 225)),
+                Ground::River => solid(sx, sy, S, S, col(88, 154, 210, 225)),
                 Ground::Cliff => {
-                    solid(sx, sy, S + 1.0, S + 1.0, col(110, 102, 94, 235));
+                    solid(sx, sy, S, S, col(110, 102, 94, 235));
                     if tiny_hash(gx0 + i, gy0 + j) > 0.6 {
                         solid(sx + 3.0, sy + 6.0, 16.0, 3.0, col(70, 64, 58, 200));
                     }
                 }
                 Ground::Forest => {
-                    solid(sx, sy, S + 1.0, S + 1.0, col(22, 62, 34, 215));
+                    solid(sx, sy, S, S, col(22, 62, 34, 215));
                     if (gx0 + i).rem_euclid(3) == 0 && (gy0 + j).rem_euclid(3) == 0 {
                         let jx = (tiny_hash(gx0 + i, gy0 + j) - 0.5) * 30.0;
                         let jy = (tiny_hash(gy0 + j, gx0 + i) - 0.5) * 30.0;
@@ -309,6 +319,7 @@ fn render_terrain(g: &Game, a: &Assets) {
     }
 
     // pass 2: contour lines (heavier every INDEX_EVERY-th level, not over water)
+    let mut labels: Vec<(f32, f32, String)> = Vec::new();
     for j in 0..ny {
         for i in 0..nx {
             let v = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
@@ -322,14 +333,24 @@ fn render_terrain(g: &Game, a: &Assets) {
             for k in k0..=k1 {
                 let level = k as f32 * CONTOUR_INTERVAL;
                 let index = k % INDEX_EVERY == 0;
-                let c = if index { col(88, 56, 28, 210) } else { col(112, 78, 42, 120) };
+                let c = if index { col(52, 30, 12, 235) } else { col(70, 46, 22, 175) };
                 for ((ax, ay), (bx, by)) in contour_segments(v, level) {
                     let (x1, y1) = to_screen(wx + ax * S, wy + ay * S);
                     let (x2, y2) = to_screen(wx + bx * S, wy + by * S);
-                    draw_line(x1, y1, x2, y2, if index { 2.0 } else { 1.0 }, c);
+                    draw_line(x1, y1, x2, y2, if index { 2.4 } else { 1.2 }, c);
+                    // label some index contours with their elevation
+                    if index && ((gx0 + i) * 7 + (gy0 + j) * 13).rem_euclid(29) == 0 {
+                        labels.push(((x1 + x2) / 2.0, (y1 + y2) / 2.0, format!("{}", level as i32)));
+                    }
                 }
             }
         }
+    }
+
+    for (lx, ly, text) in labels {
+        // contour labels sit on a small pale tag so they read over any ground
+        solid(lx - 15.0, SCREEN_H - ly - 7.0, 30.0, 14.0, col(240, 230, 200, 190));
+        label(a, &text, lx, SCREEN_H - ly + 8.0, -4, true, col(60, 36, 14, 255), true);
     }
 
     // pass 3: forest canopy, back to front
@@ -619,9 +640,37 @@ fn render_cards_overlay(g: &Game, a: &Assets) {
         px + pw / 2.0, py - 14.0, -1, true, col(220, 220, 220, 200), false);
 }
 
+fn render_backpack_overlay(g: &Game, a: &Assets) {
+    let (px, py, pw, ph) = PANEL;
+    let at_camp = g.phase == Phase::Basecamp;
+    panel_frame(a, if at_camp { "BACKPACK & CAMP STORE" } else { "BACKPACK" });
+    label(a, &format!("Points: {}     Pack {}/{} slots (food + bonus rocks)", g.outcrop_points, g.backpack_used(), kit::BACKPACK_SLOTS),
+        px + 28.0, py + ph - 38.0, 0, false, col(255, 240, 200, 235), true);
+    for (i, row) in g.pack_rows().iter().enumerate() {
+        let (rx, ry, rw, rh) = pack_row_rect(i);
+        let selected = i == g.pack_sel;
+        let bg = if selected { col(90, 76, 40, 200) } else { col(40, 35, 27, if i % 2 == 0 { 140 } else { 80 }) };
+        solid(rx, ry, rw, rh, bg);
+        if selected {
+            border(rx, ry, rw, rh, col(240, 215, 130, 255));
+        }
+        let (main_c, sub_c) = if row.enabled { (col(245, 240, 225, 245), col(190, 225, 170, 235)) } else { (col(165, 160, 150, 200), col(150, 145, 135, 190)) };
+        label(a, &row.label, rx + 16.0, ry + 48.0, 0, false, main_c, row.enabled);
+        label(a, &row.detail, rx + 16.0, ry + 21.0, -2, false, sub_c, false);
+        if row.enabled {
+            label(a, "TAP / ENTER", rx + rw - 16.0 - 96.0, ry + 34.0, -2, false, col(240, 215, 130, 220), true);
+        }
+    }
+    if let Some((text, life)) = &g.pack_msg {
+        let alpha = ((*life as f32 / 40.0).min(1.0) * 255.0) as u8;
+        label(a, text, px + pw / 2.0, py + 40.0, 1, true, col(255, 255, 255, alpha), true);
+    }
+    label(a, "Up/Down select   .   Enter or tap to use   .   B to close", px + pw / 2.0, py - 14.0, -1, true, col(220, 220, 220, 200), false);
+}
+
 fn render_ui(g: &Game, a: &Assets, touch: bool) {
     label(a, &format!("Outcrop Points: {}", g.outcrop_points), 24.0, SCREEN_H - 18.0, 2, false, col(255, 255, 255, 230), true);
-    label(a, &format!("XP: {}   Inventory: {}/{}", g.xp, g.inventory_count, INVENTORY_CAP), 24.0, SCREEN_H - 42.0, 0, false, col(230, 230, 230, 220), false);
+    label(a, &format!("XP: {}   Pack: {}/{}", g.xp, g.backpack_used(), kit::BACKPACK_SLOTS), 24.0, SCREEN_H - 42.0, 0, false, col(230, 230, 230, 220), false);
 
     // energy bar
     let (bx, by, bw, bh) = (24.0, SCREEN_H - 92.0, 200.0, 14.0);
@@ -636,7 +685,21 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
         let slope = (g.move_grade * 100.0).round() as i32;
         let c = if slope >= 8 { col(255, 190, 120, 235) } else if slope <= -8 { col(150, 220, 200, 235) } else { col(220, 220, 220, 210) };
         let tag = if g.ground_here() == Ground::River { "   wading" } else { "" };
-        label(a, &format!("Elev {} m   Slope {:+}%{}", g.elevation_here().round() as i32, slope, tag), 24.0, SCREEN_H - 112.0, -1, false, c, false);
+        label(a, &format!("Elev {} m   Slope {:+}%{}", g.elevation_here().round() as i32, slope, tag), 24.0, SCREEN_H - 100.0, -1, false, c, false);
+    }
+
+    // water bottle, pickaxe and food
+    if matches!(g.phase, Phase::Exploring | Phase::Basecamp) {
+        let (wx, wy, ww, wh) = (24.0, SCREEN_H - 146.0, 200.0, 14.0);
+        solid(wx, wy, ww, wh, col(0, 0, 0, 150));
+        let wf = (g.water / kit::WATER_MAX).clamp(0.0, 1.0);
+        solid(wx, wy, ww * wf, wh, if wf > 0.2 { col(90, 160, 230, 230) } else { col(230, 150, 70, 230) });
+        border(wx, wy, ww, wh, col(255, 255, 255, 120));
+        let wtxt = if g.dehydrated() { "Water - EMPTY" } else { "Water" };
+        label(a, wtxt, wx + ww + 10.0, wy + 14.0, -1, false, if g.dehydrated() { col(255, 150, 110, 240) } else { col(220, 220, 220, 200) }, false);
+        let pk = &g.pickaxe;
+        let pc = if pk.broken() { col(255, 140, 110, 240) } else if pk.durability * 4 <= pk.max_durability() { col(255, 210, 130, 230) } else { col(220, 220, 220, 210) };
+        label(a, &format!("Pickaxe {} {}/{}   Food: {} apple, {} sandwich", pk.name(), pk.durability, pk.max_durability(), g.apples, g.sandwiches), 24.0, SCREEN_H - 156.0, -1, false, pc, false);
     }
 
     // clock
@@ -651,6 +714,9 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
         Phase::Basecamp => hint = Some((if touch { "Tap the truck on the road below camp" } else { "Walk to the truck on the road below camp" }.into(), col(230, 230, 210, 210))),
         Phase::Exploring if g.player_on_road() => hint = Some((if touch { "Tap TRUCK to call the truck back to basecamp" } else { "Press E to call the truck back to basecamp" }.into(), col(190, 240, 190, 240))),
         Phase::Exploring if g.nearest_outcrop().is_some() => hint = Some((if touch { "Tap the outcrop (or BREAK) to break it" } else { "SPACE to break outcrop" }.into(), col(255, 255, 255, 220))),
+        Phase::Exploring if g.pickaxe.broken() => hint = Some((if touch { "Pickaxe broken - open PACK for a new one" } else { "Pickaxe broken - press B for a new one" }.into(), col(255, 170, 130, 240))),
+        Phase::Exploring if g.near_water() && g.water < kit::WATER_MAX - 0.5 => hint = Some((if touch { "Tap the water (or FILL) to fill your bottle" } else { "Press F to fill your bottle" }.into(), col(170, 215, 255, 235))),
+        Phase::Exploring if g.near_tree() && g.apples + g.sandwiches > 0 && g.energy <= kit::NOT_HUNGRY_ABOVE => hint = Some((if touch { "Shade here - tap EAT to eat" } else { "Shade here - press F to eat" }.into(), col(200, 240, 170, 235))),
         _ => {}
     }
     if let Some((text, c)) = hint {
@@ -673,7 +739,7 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
     }
 
     if !touch {
-        label(a, "WASD/Arrows/Click move  .  SPACE break  .  E interact  .  M map  .  C cards", 24.0, 40.0, -1, false, col(220, 220, 220, 180), false);
+        label(a, "WASD/Click move  .  SPACE break  .  E truck  .  F fill/eat  .  B pack  .  M map  .  C cards", 24.0, 40.0, -1, false, col(220, 220, 220, 180), false);
     }
 }
 
@@ -751,7 +817,7 @@ fn render_phase_overlays(g: &Game, a: &Assets) {
 }
 
 /// Debug-builds only: OO_DEMO=<scene> scripts a state for screenshots.
-/// scenes: camp | ride | field | road | map | cards | sunset | over | sleep
+/// scenes: camp | ride | field | road | map | cards | sunset | over | sleep | lake | hills | pack | shop
 #[cfg(debug_assertions)]
 fn debug_demo(g: &mut Game, frame: u32, pending: &mut Input) {
     let Ok(mode) = std::env::var("OO_DEMO") else { return };
@@ -809,6 +875,42 @@ fn debug_demo(g: &mut Game, frame: u32, pending: &mut Input) {
                 g.clock_ticks = (SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE;
                 g.player.x += 500.0;
             }
+            "lake" | "hills" | "pack" | "shop" => {
+                to_field(g);
+                g.clock_ticks = 4 * 60 * TICKS_PER_MINUTE; // 09:00, full daylight
+                let want_water = mode == "lake" || mode == "pack";
+                'search: for i in -120..120 {
+                    for j in -120..120 {
+                        let (x, y) = (i as f32 * 37.0, j as f32 * 41.0);
+                        let t = &g.terrain;
+                        let open = t.ground(x, y) == terrain::Ground::Open;
+                        let water_near = (0..12).any(|k| {
+                            let a = k as f32 * std::f32::consts::TAU / 12.0;
+                            t.ground(x + a.cos() * 140.0, y + a.sin() * 140.0).is_water()
+                        });
+                        let steep = t.steepness(x, y) > 0.14;
+                        if open && ((want_water && water_near) || (!want_water && steep)) && clear_distance(x, y) > 400.0 {
+                            g.player.x = x;
+                            g.player.y = y;
+                            break 'search;
+                        }
+                    }
+                }
+                g.ensure_nearby_chunks_generated();
+                if mode == "shop" {
+                    g.phase = Phase::Basecamp;
+                    g.player.x = CAMP_SPAWN.0;
+                    g.player.y = CAMP_SPAWN.1;
+                    g.outcrop_points = 70;
+                    g.water = 40.0;
+                    g.pickaxe.durability = 4;
+                }
+                if mode == "pack" {
+                    g.water = 55.0;
+                    g.pickaxe.durability = 0;
+                    g.outcrop_points = 30;
+                }
+            }
             "sleep" => {
                 g.phase = Phase::Sleeping;
                 g.sleep_timer = 110;
@@ -821,6 +923,7 @@ fn debug_demo(g: &mut Game, frame: u32, pending: &mut Input) {
         match mode.as_str() {
             "map" => pending.map_pressed = true,
             "cards" => pending.cards_pressed = true,
+            "pack" | "shop" => pending.pack_pressed = true,
             _ => {}
         }
     }
@@ -859,6 +962,8 @@ async fn main() {
         let (scale, off_x, off_y) = fit();
         pending.map_pressed |= is_key_pressed(KeyCode::M);
         pending.cards_pressed |= is_key_pressed(KeyCode::C);
+        pending.pack_pressed |= is_key_pressed(KeyCode::B);
+        pending.use_pressed |= is_key_pressed(KeyCode::F);
         pending.space_pressed |= is_key_pressed(KeyCode::Space);
         pending.interact_pressed |= is_key_pressed(KeyCode::E);
         pending.restart_pressed |= is_key_pressed(KeyCode::Enter);
