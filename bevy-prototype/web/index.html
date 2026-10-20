@@ -7,7 +7,11 @@
   <style>
     html, body { margin: 0; height: 100%; background: #0b0f0a; overflow: hidden; touch-action: none;
       overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
-    canvas#bevy { display: block; width: 100%; height: 100%; outline: none; }
+    canvas#bevy { display: block; width: 100%; height: 100%; outline: none; transform-origin: 50% 55%; }
+    /* the zoom-out reveal: the world starts magnified and soft, then pulls back to normal */
+    canvas#bevy.intro { transform: scale(1.9); filter: blur(7px) brightness(.7); }
+    canvas#bevy.zoomout { transform: scale(1); filter: none;
+      transition: transform 2.4s cubic-bezier(.16,.84,.24,1), filter 2.0s ease-out; }
 
     /* ---- opening / loading page ---- */
     #splash { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
@@ -40,13 +44,21 @@
     #tip { max-width: 440px; font: 14px/1.5 system-ui, sans-serif; color: #98a688; }
     #splash.error h1 span, #splash.error #msg { color: #ff9c8a; }
     #splash.error .hammer { animation: none; }
+    #start { display: none; font: 700 20px system-ui, sans-serif; padding: 14px 40px; border: 0; border-radius: 12px;
+      background: linear-gradient(#ffc36a, #f0a04a); color: #20150a; cursor: pointer; box-shadow: 0 6px 22px #f0a04a55;
+      animation: pulse 1.6s ease-in-out infinite; }
+    #splash.ready #start { display: inline-block; }
+    #splash.ready #strata, #splash.ready #bar { opacity: .55; }
+    @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    #splash.zoom { background: transparent; }
+    #splash.zoom > * { opacity: 0; transform: scale(1.25); transition: opacity .6s ease, transform 1.2s ease; }
     #retry { display: none; font: 600 15px system-ui, sans-serif; padding: 10px 22px; border: 0; border-radius: 8px;
       background: #f0a04a; color: #20150a; cursor: pointer; }
     #splash.error #retry { display: inline-block; }
   </style>
 </head>
 <body>
-  <canvas id="bevy"></canvas>
+  <canvas id="bevy" class="intro"></canvas>
 
   <div id="splash">
     <h1>Outcrops <span>Odyssey</span></h1>
@@ -55,6 +67,7 @@
     <div id="bar"><div id="barfill"></div></div>
     <div id="msg">Preparing the expedition…</div>
     <div id="tip"></div>
+    <button id="start">▶ Start expedition</button>
     <button id="retry" onclick="location.reload()">Try again</button>
   </div>
 
@@ -113,13 +126,28 @@
       const wasm = fetchWasm("./outcrops_bevy_bg.wasm");
       // hide the splash once the first frames are on screen (the engine keeps streaming textures in)
       let started = false;
+      // loaded: wait for a tap (browsers only allow fullscreen from a user gesture), then go
+      // fullscreen and pull the camera back from a close-up
       const reveal = () => {
         if (started) return;
         started = true;
         progress(1, "Ready!");
-        setTimeout(() => { splash.classList.add("done"); setTimeout(() => splash.remove(), 900); }, 1800);
+        splash.classList.add("ready");
+        const go = async () => {
+          $("start").onclick = null;
+          try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
+          try { await screen.orientation?.lock?.("landscape"); } catch {}
+          const cv = $("bevy");
+          splash.classList.add("zoom");
+          void cv.offsetWidth;                  // commit the 'intro' state before animating out of it
+          cv.classList.add("zoomout");
+          setTimeout(() => cv.classList.remove("intro", "zoomout"), 2600);
+          setTimeout(() => splash.remove(), 1500);
+        };
+        $("start").onclick = go;
+        addEventListener("keydown", (e) => { if (e.key === "Enter") go(); }, { once: true });
       };
-      const watchdog = setTimeout(reveal, 60000);
+      const watchdog = setTimeout(reveal, 90000);
       try {
         const p = init({ module_or_path: wasm });
         // Bevy starts its loop inside init(); it only settles via the control-flow exception below
