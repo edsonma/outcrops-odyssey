@@ -24,6 +24,9 @@ mod geology;
 #[allow(dead_code)]
 mod kit;
 
+mod terrain_view;
+mod kit_ui;
+
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 use bevy::light::{CascadeShadowConfigBuilder, GlobalAmbientLight};
 use bevy::mesh::VertexAttributeValues;
@@ -32,10 +35,9 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use game::*;
 use std::collections::HashMap;
+use terrain_view::{ground_y, S};
 use world::*;
 
-/// metres per game unit: a 640-unit chunk is 16 m, the 80-unit player ~2 m tall.
-const S: f32 = 0.025;
 const SPAWN_RADIUS: i32 = 2;
 
 fn to_world(x: f32, y: f32) -> Vec3 {
@@ -52,6 +54,17 @@ struct PendingInput(Input);
 #[derive(Resource, Default)]
 struct ChunkEntities(HashMap<(i32, i32), Entity>);
 
+/// Farm plots are bigger than chunks, so they are streamed on their own grid (value None = no farm there).
+#[derive(Resource, Default)]
+struct FarmEntities(HashMap<(i32, i32), Option<Entity>>);
+
+/// The camp is rebuilt when the map (region) changes, because the relief under it does.
+#[derive(Resource)]
+struct CampState {
+    entity: Entity,
+    level: usize,
+}
+
 #[derive(Resource, PartialEq, Eq, Clone, Copy)]
 enum CamMode {
     Tilted,
@@ -60,14 +73,17 @@ enum CamMode {
 
 #[derive(Resource)]
 struct Look {
-    grass: [Handle<StandardMaterial>; 3],
-    dirt: Handle<StandardMaterial>,
+    grass: Handle<StandardMaterial>,
+    cliff: Handle<StandardMaterial>,
+    water: Handle<StandardMaterial>,
+    edge: Handle<StandardMaterial>,
+    /// white, vertex-coloured (fences, crop rows)
+    props: Handle<StandardMaterial>,
     road: Handle<StandardMaterial>,
     dash: Handle<StandardMaterial>,
     rock_raw: Handle<StandardMaterial>,
     rock_visited: Handle<StandardMaterial>,
     rocks: Vec<Handle<Mesh>>,
-    ground: Handle<Mesh>,
     tree: Handle<WorldAsset>,
 }
 
@@ -114,20 +130,24 @@ fn main() {
         .insert_resource(GameRes(Game::new(0x5eed_1234)))
         .init_resource::<PendingInput>()
         .init_resource::<ChunkEntities>()
+        .init_resource::<FarmEntities>()
         .insert_resource(CamMode::Tilted)
         .insert_resource(ClearColor(Color::srgb(0.55, 0.72, 0.9)))
-        .add_systems(Startup, (setup_scene, setup_camp, setup_hud).chain())
+        .add_systems(Startup, (setup_scene, setup_camp, setup_hud, kit_ui::setup_kit_ui).chain())
         .add_systems(FixedUpdate, tick_game)
         .add_systems(
             Update,
             (
+                kit_ui::button_input,
                 gather_input,
+                sync_level,
                 sync_chunks,
                 sync_outcrops,
                 sync_actors,
                 follow_camera,
                 update_environment,
                 update_hud,
+                kit_ui::update_kit_ui,
                 dev_hooks,
             )
                 .chain(),
@@ -203,18 +223,26 @@ fn setup_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
 ) {
-    let grass_tints = [Color::srgb(0.85, 0.95, 0.75), Color::srgb(0.95, 0.95, 0.8), Color::srgb(0.78, 0.9, 0.7)];
+    let mut grass = pbr(&assets, "grass", Color::srgb(0.9, 0.96, 0.8), 0.25, LinearRgba::BLACK);
+    grass.perceptual_roughness = 1.0;
     let look = Look {
-        grass: grass_tints.map(|t| mats.add(pbr(&assets, "grass", t, 4.0, LinearRgba::BLACK))),
-        dirt: mats.add(plain(Color::srgb(0.30, 0.22, 0.14), 1.0)),
+        // terrain UVs are in metres, so uv_scale 0.25 repeats the texture every 4 m, seamlessly across chunks
+        grass: mats.add(grass),
+        cliff: mats.add(pbr(&assets, "cliff", Color::srgb(0.85, 0.82, 0.78), 0.2, LinearRgba::BLACK)),
+        water: mats.add(StandardMaterial {
+            base_color: Color::srgba(0.10, 0.34, 0.55, 0.78),
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 0.06,
+            reflectance: 0.6,
+            ..default()
+        }),
+        edge: mats.add(plain(Color::srgb(0.02, 0.025, 0.02), 1.0)),
+        props: mats.add(plain(Color::WHITE, 0.9)),
         road: mats.add(plain(Color::srgb(0.13, 0.13, 0.145), 0.85)),
         dash: mats.add(plain(Color::srgb(0.92, 0.78, 0.25), 0.7)),
         rock_raw: mats.add(pbr(&assets, "rock", Color::WHITE, 1.5, LinearRgba::new(0.10, 0.075, 0.01, 1.0))),
         rock_visited: mats.add(pbr(&assets, "moss", Color::srgb(0.75, 0.9, 0.7), 1.5, LinearRgba::BLACK)),
-        rocks: (0..3)
-            .map(|i| meshes.add(make_rock(i as f32 * 2.7 + 0.5)))
-            .collect(),
-        ground: meshes.add(Plane3d::default().mesh().size(CHUNK as f32 * S, CHUNK as f32 * S)),
+        rocks: (0..3).map(|i| meshes.add(make_rock(i as f32 * 2.7 + 0.5))).collect(),
         // glTF pipeline: swap tree.glb for any Blender export and nothing else changes
         tree: assets.load("models/tree.glb#Scene0"),
     };
@@ -289,8 +317,14 @@ fn setup_scene(
         });
 }
 
-/// The basecamp is a fixed landmark: dirt yard, three cabins, a tent, crates and a campfire.
-fn setup_camp(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+/// The basecamp is a fixed landmark: dirt yard, three cabins, a tent, crates and a campfire,
+/// all standing on whatever relief the current map has under it.
+fn setup_camp(mut commands: Commands, game: Res<GameRes>, mut meshes: ResMut<Assets<Mesh>>, mut mats: ResMut<Assets<StandardMaterial>>) {
+    let entity = spawn_camp(&mut commands, &game.0.terrain, &mut meshes, &mut mats);
+    commands.insert_resource(CampState { entity, level: game.0.level });
+}
+
+fn spawn_camp(commands: &mut Commands, t: &terrain::Terrain, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>) -> Entity {
     let yard = mats.add(plain(Color::srgb(0.36, 0.28, 0.19), 1.0));
     let wall = mats.add(plain(Color::srgb(0.45, 0.30, 0.18), 0.9));
     let roof = mats.add(plain(Color::srgb(0.58, 0.22, 0.17), 0.8));
@@ -299,50 +333,53 @@ fn setup_camp(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mats
     let log_m = mats.add(plain(Color::srgb(0.18, 0.11, 0.07), 1.0));
     let ember = mats.add(StandardMaterial { base_color: Color::srgb(1.0, 0.45, 0.1), emissive: LinearRgba::new(6.0, 2.0, 0.3, 1.0), ..default() });
 
-    let (x0, y0, x1, y1) = CAMP;
-    let center = to_world((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size((x1 - x0) * S, (y1 - y0) * S))),
-        MeshMaterial3d(yard),
-        Transform::from_translation(center + Vec3::Y * 0.02),
-    ));
+    // a point on the ground at game position (x, y)
+    let at = |x: f32, y: f32| terrain_view::surface(t, x, y);
+    let root = commands.spawn((Transform::default(), Visibility::default())).id();
+    let mut c = commands.entity(root);
+    c.with_children(|c| {
+        c.spawn((
+            Mesh3d(meshes.add(terrain_view::drape_rect(t, CAMP, 0.03, [1.0; 4]).build())),
+            MeshMaterial3d(yard),
+        ));
 
-    for (cx, cy) in [(-240.0, 400.0), (-60.0, 415.0), (260.0, 410.0)] {
-        let p = to_world(cx, cy);
-        commands.spawn((Mesh3d(meshes.add(Cuboid::new(3.0, 1.9, 1.7))), MeshMaterial3d(wall.clone()), Transform::from_translation(p + Vec3::Y * 0.95)));
-        for sign in [-1.0f32, 1.0] {
-            commands.spawn((
-                Mesh3d(meshes.add(Cuboid::new(3.4, 0.14, 1.15))),
-                MeshMaterial3d(roof.clone()),
-                Transform::from_translation(p + Vec3::new(0.0, 2.15, sign * 0.52))
-                    .with_rotation(Quat::from_rotation_x(sign * 0.55)),
+        for (cx, cy) in [(-240.0, 400.0), (-60.0, 415.0), (260.0, 410.0)] {
+            let p = at(cx, cy);
+            c.spawn((Mesh3d(meshes.add(Cuboid::new(3.0, 1.9, 1.7))), MeshMaterial3d(wall.clone()), Transform::from_translation(p + Vec3::Y * 0.8)));
+            for sign in [-1.0f32, 1.0] {
+                c.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(3.4, 0.14, 1.15))),
+                    MeshMaterial3d(roof.clone()),
+                    Transform::from_translation(p + Vec3::new(0.0, 2.0, sign * 0.52)).with_rotation(Quat::from_rotation_x(sign * 0.55)),
+                ));
+            }
+        }
+        // tent: a 4-sided pyramid
+        c.spawn((
+            Mesh3d(meshes.add(Cone { radius: 1.3, height: 1.7 }.mesh().resolution(4))),
+            MeshMaterial3d(canvas),
+            Transform::from_translation(at(340.0, 285.0) + Vec3::Y * 0.85).with_rotation(Quat::from_rotation_y(0.78)),
+        ));
+        for (cx, cy, s) in [(255.0, 205.0, 0.7), (285.0, 210.0, 0.55), (265.0, 238.0, 0.6)] {
+            c.spawn((Mesh3d(meshes.add(Cuboid::new(s, s, s))), MeshMaterial3d(crate_m.clone()), Transform::from_translation(at(cx, cy) + Vec3::Y * s / 2.0)));
+        }
+        // campfire: logs + embers + a flickering light
+        let fire = at(-30.0, 240.0);
+        for a in [0.0f32, 1.05, 2.1] {
+            c.spawn((
+                Mesh3d(meshes.add(Cylinder::new(0.07, 0.8))),
+                MeshMaterial3d(log_m.clone()),
+                Transform::from_translation(fire + Vec3::Y * 0.1).with_rotation(Quat::from_rotation_y(a) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
             ));
         }
-    }
-    // tent: a 4-sided pyramid
-    commands.spawn((
-        Mesh3d(meshes.add(Cone { radius: 1.3, height: 1.7 }.mesh().resolution(4))),
-        MeshMaterial3d(canvas),
-        Transform::from_translation(to_world(340.0, 285.0) + Vec3::Y * 0.85).with_rotation(Quat::from_rotation_y(0.78)),
-    ));
-    for (cx, cy, s) in [(255.0, 205.0, 0.7), (285.0, 210.0, 0.55), (265.0, 238.0, 0.6)] {
-        commands.spawn((Mesh3d(meshes.add(Cuboid::new(s, s, s))), MeshMaterial3d(crate_m.clone()), Transform::from_translation(to_world(cx, cy) + Vec3::Y * s / 2.0)));
-    }
-    // campfire: logs + embers + a flickering light
-    let fire = to_world(-30.0, 240.0);
-    for a in [0.0f32, 1.05, 2.1] {
-        commands.spawn((
-            Mesh3d(meshes.add(Cylinder::new(0.07, 0.8))),
-            MeshMaterial3d(log_m.clone()),
-            Transform::from_translation(fire + Vec3::Y * 0.1).with_rotation(Quat::from_rotation_y(a) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+        c.spawn((Mesh3d(meshes.add(Sphere::new(0.18))), MeshMaterial3d(ember), Transform::from_translation(fire + Vec3::Y * 0.2)));
+        c.spawn((
+            Campfire,
+            PointLight { color: Color::srgb(1.0, 0.55, 0.2), intensity: 60_000.0, range: 14.0, shadow_maps_enabled: false, ..default() },
+            Transform::from_translation(fire + Vec3::Y * 0.8),
         ));
-    }
-    commands.spawn((Mesh3d(meshes.add(Sphere::new(0.18))), MeshMaterial3d(ember), Transform::from_translation(fire + Vec3::Y * 0.2)));
-    commands.spawn((
-        Campfire,
-        PointLight { color: Color::srgb(1.0, 0.55, 0.2), intensity: 60_000.0, range: 14.0, shadow_maps_enabled: false, ..default() },
-        Transform::from_translation(fire + Vec3::Y * 0.8),
-    ));
+    });
+    root
 }
 
 // ============================================================================ HUD
@@ -377,12 +414,16 @@ fn gather_input(
     touches: Res<Touches>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    ui_buttons: Query<&Interaction, With<Button>>,
+    game: Res<GameRes>,
     mut pend: ResMut<PendingInput>,
     mut mode: ResMut<CamMode>,
 ) {
     let p = &mut pend.0;
     p.map_pressed |= keys.just_pressed(KeyCode::KeyM);
     p.cards_pressed |= keys.just_pressed(KeyCode::KeyC);
+    p.pack_pressed |= keys.just_pressed(KeyCode::KeyB);
+    p.use_pressed |= keys.just_pressed(KeyCode::KeyF);
     p.space_pressed |= keys.just_pressed(KeyCode::Space);
     p.interact_pressed |= keys.just_pressed(KeyCode::KeyE);
     p.restart_pressed |= keys.just_pressed(KeyCode::Enter);
@@ -392,19 +433,34 @@ fn gather_input(
         *mode = if *mode == CamMode::Tilted { CamMode::Side } else { CamMode::Tilted };
     }
 
-    // click / tap -> ray from the camera -> ground plane -> game coordinates
+    // a press that lands on an on-screen button is the button's, not the world's
+    if ui_buttons.iter().any(|i| *i != Interaction::None) {
+        return;
+    }
     let screen_pos = if mouse.just_pressed(MouseButton::Left) {
         windows.single().ok().and_then(|w| w.cursor_position())
     } else {
         touches.iter_just_pressed().next().map(|t| t.position())
     };
-    if let (Some(pos), Ok((cam, gt))) = (screen_pos, camera.single()) {
-        if let Ok(ray) = cam.viewport_to_world(gt, pos) {
-            if let Some(d) = ray.intersect_plane(Vec3::ZERO, InfinitePlane3d::new(Vec3::Y)) {
-                let hit = ray.get_point(d);
-                p.world_click = Some((hit.x / S, -hit.z / S));
+    let Some(pos) = screen_pos else { return };
+    match game.0.ui_mode {
+        // menus use the game's 1280x720 y-up virtual screen
+        UiMode::Backpack => {
+            if let Ok(w) = windows.single() {
+                p.click = Some((pos.x / w.width() * 1280.0, 720.0 - pos.y / w.height() * 720.0));
             }
         }
+        UiMode::None => {
+            // click / tap -> ray from the camera -> terrain -> game coordinates
+            if let Ok((cam, gt)) = camera.single() {
+                if let Ok(ray) = cam.viewport_to_world(gt, pos) {
+                    if let Some(hit) = terrain_view::raycast(&game.0.terrain, ray.origin, *ray.direction, 120.0) {
+                        p.world_click = Some((hit.x / S, -hit.z / S));
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -423,8 +479,44 @@ fn hash01(s: &str) -> f32 {
     (h % 10_000) as f32 / 10_000.0
 }
 
-fn sync_chunks(mut commands: Commands, game: Res<GameRes>, look: Res<Look>, mut live: ResMut<ChunkEntities>, mut meshes: ResMut<Assets<Mesh>>) {
-    let (fx, fy) = game.0.focus();
+/// When the player moves on to another map the relief changes: throw the old world away.
+fn sync_level(
+    mut commands: Commands,
+    game: Res<GameRes>,
+    mut live: ResMut<ChunkEntities>,
+    mut farms: ResMut<FarmEntities>,
+    mut camp: ResMut<CampState>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    let g = &game.0;
+    if camp.level == g.level {
+        return;
+    }
+    for (_, e) in live.0.drain() {
+        commands.entity(e).despawn();
+    }
+    for (_, e) in farms.0.drain() {
+        if let Some(e) = e {
+            commands.entity(e).despawn();
+        }
+    }
+    commands.entity(camp.entity).despawn();
+    camp.entity = spawn_camp(&mut commands, &g.terrain, &mut meshes, &mut mats);
+    camp.level = g.level;
+}
+
+fn sync_chunks(
+    mut commands: Commands,
+    game: Res<GameRes>,
+    look: Res<Look>,
+    mut live: ResMut<ChunkEntities>,
+    mut farms: ResMut<FarmEntities>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let g = &game.0;
+    let t = &g.terrain;
+    let (fx, fy) = g.focus();
     let (pcx, pcy) = world_to_chunk(fx, fy);
 
     // despawn chunks that fell out of range
@@ -441,38 +533,42 @@ fn sync_chunks(mut commands: Commands, game: Res<GameRes>, look: Res<Look>, mut 
             if live.0.contains_key(&key) {
                 continue;
             }
-            let Some(chunk) = game.0.chunks.get(&key) else { continue };
+            let Some(chunk) = g.chunks.get(&key) else { continue };
             let (cx, cy) = key;
-            let center = ((cx * CHUNK) as f32 + CHUNK as f32 / 2.0, (cy * CHUNK) as f32 + CHUNK as f32 / 2.0);
-            let local = |x: f32, y: f32| to_world(x - center.0, y - center.1);
+            let (ox, oy) = ((cx * CHUNK) as f32, (cy * CHUNK) as f32);
+            let center = (ox + CHUNK as f32 / 2.0, oy + CHUNK as f32 / 2.0);
+            // chunk-local position standing on the terrain
+            let local = |x: f32, y: f32| Vec3::new((x - center.0) * S, ground_y(t, x, y), -(y - center.1) * S);
 
+            let geo = terrain_view::build_chunk(t, cx, cy);
             let road_mat = look.road.clone();
             let dash_mat = look.dash.clone();
             let entity = commands
                 .spawn((Transform::from_translation(to_world(center.0, center.1)), Visibility::default()))
                 .with_children(|c| {
                     // ground
-                    c.spawn((Mesh3d(look.ground.clone()), MeshMaterial3d(look.grass[chunk.grass_variant as usize % 3].clone())));
-
-                    // dirt patches
-                    for d in &chunk.dirt_patches {
-                        c.spawn((
-                            Mesh3d(meshes.add(Circle::new(2.0))),
-                            MeshMaterial3d(look.dirt.clone()),
-                            Transform::from_translation(local(d.x, d.y) + Vec3::Y * 0.012)
-                                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                                .with_scale(Vec3::new(1.2, 0.85, 1.0)),
-                        ));
+                    c.spawn((Mesh3d(meshes.add(geo.grass)), MeshMaterial3d(look.grass.clone())));
+                    if let Some(m) = geo.cliff {
+                        c.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(look.cliff.clone())));
+                    }
+                    if let Some(m) = geo.edge {
+                        c.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(look.edge.clone())));
+                    }
+                    if let Some(m) = geo.water {
+                        c.spawn((Mesh3d(meshes.add(m)), MeshMaterial3d(look.water.clone()), bevy::light::NotShadowCaster));
                     }
 
-                    // trees: the glTF scene, varied by a stable per-position hash
-                    for (i, t) in chunk.trees.iter().enumerate() {
+                    // trees: the glTF scene, varied by a stable per-position hash. Loose trees on
+                    // open ground, plus the dense forest that fills the impassable forest cells.
+                    let loose = chunk.trees.iter().map(|p| (p.x, p.y, 1.0f32));
+                    let dense = geo.forest.iter().map(|&(x, y)| (x, y, 1.15f32));
+                    for (i, (x, y, size)) in loose.chain(dense).enumerate() {
                         let h = hash01(&format!("{cx}_{cy}_t{i}"));
                         c.spawn((
                             WorldAssetRoot(look.tree.clone()),
-                            Transform::from_translation(local(t.x, t.y))
+                            Transform::from_translation(local(x, y))
                                 .with_rotation(Quat::from_rotation_y(h * 6.28))
-                                .with_scale(Vec3::splat(0.85 + h * 0.5)),
+                                .with_scale(Vec3::splat((0.85 + h * 0.5) * size)),
                         ));
                     }
 
@@ -490,28 +586,54 @@ fn sync_chunks(mut commands: Commands, game: Res<GameRes>, look: Res<Look>, mut 
                         ));
                     }
 
-                    // main roads (each owned by the chunk containing its centre line)
+                    // main roads (each owned by the chunk containing its centre line), draped over the relief
                     let yh = nearest_h_road(center.1);
                     if ((yh / CHUNK as f32).floor() as i32) == cy {
-                        let at = local(center.0, yh);
-                        c.spawn((Mesh3d(meshes.add(Plane3d::default().mesh().size(CHUNK as f32 * S, ROAD_W * S))), MeshMaterial3d(road_mat.clone()), Transform::from_translation(at + Vec3::Y * 0.02)));
-                        for i in 0..8 {
-                            let x = (cx * CHUNK) as f32 + i as f32 * 80.0 + 22.0;
-                            c.spawn((Mesh3d(meshes.add(Plane3d::default().mesh().size(44.0 * S, 6.0 * S))), MeshMaterial3d(dash_mat.clone()), Transform::from_translation(local(x, yh) + Vec3::Y * 0.03)));
-                        }
+                        let road = terrain_view::drape_strip(t, (ox, yh), (ox + CHUNK as f32, yh), ROAD_W, 0.06, center, [1.0; 4]);
+                        c.spawn((Mesh3d(meshes.add(road.build())), MeshMaterial3d(road_mat.clone())));
+                        let dashes = (0..8)
+                            .map(|i| {
+                                let x = ox + i as f32 * 80.0 + 22.0;
+                                terrain_view::drape_strip(t, (x, yh), (x + 44.0, yh), 6.0, 0.09, center, [1.0; 4])
+                            })
+                            .collect();
+                        c.spawn((Mesh3d(meshes.add(terrain_view::merge(dashes).build())), MeshMaterial3d(dash_mat.clone())));
                     }
                     let xv = nearest_v_road(center.0);
                     if ((xv / CHUNK as f32).floor() as i32) == cx {
-                        let at = local(xv, center.1);
-                        c.spawn((Mesh3d(meshes.add(Plane3d::default().mesh().size(ROAD_W * S, CHUNK as f32 * S))), MeshMaterial3d(road_mat.clone()), Transform::from_translation(at + Vec3::Y * 0.025)));
-                        for i in 0..8 {
-                            let y = (cy * CHUNK) as f32 + i as f32 * 80.0 + 22.0;
-                            c.spawn((Mesh3d(meshes.add(Plane3d::default().mesh().size(6.0 * S, 44.0 * S))), MeshMaterial3d(dash_mat.clone()), Transform::from_translation(local(xv, y) + Vec3::Y * 0.035)));
-                        }
+                        let road = terrain_view::drape_strip(t, (xv, oy), (xv, oy + CHUNK as f32), ROAD_W, 0.065, center, [1.0; 4]);
+                        c.spawn((Mesh3d(meshes.add(road.build())), MeshMaterial3d(road_mat.clone())));
+                        let dashes = (0..8)
+                            .map(|i| {
+                                let y = oy + i as f32 * 80.0 + 22.0;
+                                terrain_view::drape_strip(t, (xv, y), (xv, y + 44.0), 6.0, 0.095, center, [1.0; 4])
+                            })
+                            .collect();
+                        c.spawn((Mesh3d(meshes.add(terrain_view::merge(dashes).build())), MeshMaterial3d(dash_mat.clone())));
                     }
                 })
                 .id();
             live.0.insert(key, entity);
+        }
+    }
+
+    // farm plots live on their own (larger) grid
+    let (fcx, fcy) = ((fx / terrain::FARM_CELL).floor() as i32, (fy / terrain::FARM_CELL).floor() as i32);
+    let stale: Vec<_> = farms.0.keys().copied().filter(|(a, b)| (a - fcx).abs() > 3 || (b - fcy).abs() > 3).collect();
+    for k in stale {
+        if let Some(Some(e)) = farms.0.remove(&k) {
+            commands.entity(e).despawn();
+        }
+    }
+    for ci in fcx - 2..=fcx + 2 {
+        for cj in fcy - 2..=fcy + 2 {
+            if farms.0.contains_key(&(ci, cj)) {
+                continue;
+            }
+            let ent = t.farm_rect(ci, cj).map(|r| {
+                commands.spawn((Mesh3d(meshes.add(terrain_view::build_farm(t, r))), MeshMaterial3d(look.props.clone()))).id()
+            });
+            farms.0.insert((ci, cj), ent);
         }
     }
 }
@@ -538,7 +660,7 @@ fn sync_actors(
 ) {
     let g = &game.0;
     if let Ok(mut t) = player.single_mut() {
-        let pos = to_world(g.player.x, g.player.y);
+        let pos = terrain_view::surface(&g.terrain, g.player.x, g.player.y);
         let moved = last.map(|l| pos - l).unwrap_or(Vec3::ZERO);
         let walking = moved.length_squared() > 1e-8;
         if walking {
@@ -553,7 +675,7 @@ fn sync_actors(
         *v = if g.player_visible() { Visibility::Inherited } else { Visibility::Hidden };
     }
     if let Ok(mut t) = truck.single_mut() {
-        t.translation = to_world(g.truck.x, g.truck.y);
+        t.translation = terrain_view::surface(&g.terrain, g.truck.x, g.truck.y);
         // local +X -> heading (dx, 0, -dy)  =>  yaw = atan2(dy, dx)
         t.rotation = Quat::from_rotation_y(g.truck.dy.atan2(g.truck.dx));
     }
@@ -569,14 +691,17 @@ fn follow_camera(
     mut cam: Query<&mut Transform, With<MainCamera>>,
 ) {
     let Ok(mut t) = cam.single_mut() else { return };
-    let (fx, fy) = game.0.focus();
-    let target = to_world(fx, fy) + Vec3::Y * 1.0;
+    let g = &game.0;
+    let (fx, fy) = g.focus();
+    let target = terrain_view::surface(&g.terrain, fx, fy) + Vec3::Y * 1.0;
     // Tilted = angled top-down-ish (the Macroquad view, in 3D); Side = low, side-on "2.5D" view.
     let offset = match *mode {
         CamMode::Tilted => Vec3::new(0.0, 13.0, 10.5),
         CamMode::Side => Vec3::new(0.0, 3.2, 15.0),
     };
-    let desired = target + offset;
+    let mut desired = target + offset;
+    // never dip under a hill that rises behind the player
+    desired.y = desired.y.max(ground_y(&g.terrain, desired.x / S, -desired.z / S) + 1.8);
     let k = 1.0 - (-7.0 * time.delta_secs()).exp();
     t.translation = t.translation.lerp(desired, k);
     let look_at = target;
@@ -641,18 +766,29 @@ fn update_hud(
     let g = &game.0;
     let m = g.minutes_of_day();
     if let Ok(mut t) = hud.single_mut() {
-        t.0 = format!(
-            "Outcrop Points: {}\nXP: {}   Bag: {}/{}\nEnergy: {:.0}%\nDay {}   {:02}:{:02}   (sunset 18:00)\n[V] camera: {}",
-            g.outcrop_points,
-            g.xp,
-            g.backpack_used(),
-            kit::BACKPACK_SLOTS,
-            g.energy,
-            g.day,
-            m / 60,
-            m % 60,
-            if *mode == CamMode::Tilted { "tilted" } else { "side" },
-        );
+        let mut lines = vec![
+            format!("Outcrop Points: {}", g.outcrop_points),
+            format!("XP: {}   Pack: {}/{}", g.xp, g.backpack_used(), kit::BACKPACK_SLOTS),
+            format!("Day {}   {:02}:{:02}   (sunset 18:00)", g.day, m / 60, m % 60),
+        ];
+        if matches!(g.phase, Phase::Exploring | Phase::Basecamp) {
+            let pk = &g.pickaxe;
+            lines.push(format!("Pickaxe {} {}/{}   Food: {} apple, {} sandwich", pk.name(), pk.durability, pk.max_durability(), g.apples, g.sandwiches));
+            let q = g.region.quota;
+            lines.push(format!("{}  (map {}/{})   Survey {}/{}", g.region.name, g.level + 1, geology::REGIONS.len(), g.surveyed.min(q), q));
+        }
+        if g.phase == Phase::Exploring {
+            let slope = (g.move_grade * 100.0).round() as i32;
+            let wading = if g.ground_here() == terrain::Ground::River { "   wading" } else { "" };
+            lines.push(format!("Elev {} m   Slope {:+}%{}", g.elevation_here().round() as i32, slope, wading));
+            let u = g.unit_here();
+            lines.push(format!("Unit: {} ({})", u.name, u.age));
+        }
+        if g.water <= 0.0 {
+            lines.push("Water - EMPTY".into());
+        }
+        lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
+        t.0 = lines.join("\n");
     }
     if let Ok(mut t) = hint.single_mut() {
         t.0 = match g.phase {
@@ -660,6 +796,9 @@ fn update_hud(
             Phase::Basecamp => "Walk to the truck on the road below camp (WASD / click)".into(),
             Phase::Exploring if g.player_on_road() => "Press E to call the truck back to basecamp".into(),
             Phase::Exploring if g.nearest_outcrop().is_some() => "SPACE (or click the rock) to break it".into(),
+            Phase::Exploring if g.pickaxe.broken() => "Pickaxe broken - press B for a new one".into(),
+            Phase::Exploring if g.near_water() && g.water < kit::WATER_MAX - 0.5 => "Press F to fill your bottle".into(),
+            Phase::Exploring if g.near_tree() && g.apples + g.sandwiches > 0 && g.energy <= kit::NOT_HUNGRY_ABOVE => "Shade here - press F to eat".into(),
             Phase::Exploring if g.minutes_to_sunset() <= 120 => format!("Sunset in {} min - reach a main road!", g.minutes_to_sunset()),
             Phase::GameOver => "GAME OVER - night fell off the road. Press ENTER to start over".into(),
             Phase::Sleeping => format!("Day {} complete - resting...", g.day),
@@ -705,6 +844,28 @@ fn dev_hooks(mut commands: Commands, mut game: ResMut<GameRes>, mut frame: Local
                     }
                 }
             }
+            // terrain scenes: stand on open ground near the kind of terrain we want to look at
+            let want: Option<fn(terrain::Ground) -> bool> = match scene.as_str() {
+                "farm" => Some(|k| k == terrain::Ground::Farm),
+                "lake" | "pack" => Some(|k| k == terrain::Ground::Lake),
+                "river" => Some(|k| k == terrain::Ground::River),
+                "forest" => Some(|k| k == terrain::Ground::Forest),
+                "cliff" => Some(|k| k == terrain::Ground::Cliff),
+                _ => None,
+            };
+            if let Some(want) = want {
+                if let Some((x, y)) = find_spot(&g.terrain, want) {
+                    g.player.x = x;
+                    g.player.y = y;
+                }
+                if scene == "pack" {
+                    g.water = 40.0;
+                    g.pickaxe.durability = 4;
+                    g.outcrop_points = 150;
+                    g.apples = 2;
+                    g.ui_mode = UiMode::Backpack;
+                }
+            }
             match scene.as_str() {
                 "noon" => g.clock_ticks = 7 * 60 * TICKS_PER_MINUTE,
                 "sunset" => g.clock_ticks = (12 * 60 + 35) * TICKS_PER_MINUTE,
@@ -723,4 +884,25 @@ fn dev_hooks(mut commands: Commands, mut game: ResMut<GameRes>, mut frame: Local
             std::process::exit(0);
         }
     }
+}
+
+/// Nearest open, off-road spot (spiralling out from the camp) with `want` ground within ~250 units.
+fn find_spot(t: &terrain::Terrain, want: fn(terrain::Ground) -> bool) -> Option<(f32, f32)> {
+    for ring in 1..60 {
+        let r = ring as f32 * 120.0;
+        for k in 0..(ring * 8) {
+            let a = k as f32 / (ring * 8) as f32 * std::f32::consts::TAU;
+            let (x, y) = (TRUCK_SPOT.0 + a.cos() * r, TRUCK_SPOT.1 + a.sin() * r);
+            if t.ground(x, y) != terrain::Ground::Open || terrain::clear_distance(x, y) < 350.0 {
+                continue;
+            }
+            if (0..8).any(|d| {
+                let b = d as f32 * std::f32::consts::FRAC_PI_4;
+                want(t.ground(x + b.cos() * 260.0, y + b.sin() * 260.0))
+            }) {
+                return Some((x, y));
+            }
+        }
+    }
+    None
 }
