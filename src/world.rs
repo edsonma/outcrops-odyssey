@@ -2,6 +2,8 @@
 //! prototype). The same chunk coordinates always regenerate the same
 //! content. World coordinates are y-up, matching the original game.
 
+use crate::terrain::{Ground, Terrain};
+
 pub const CHUNK: i32 = 640;
 pub const VIEW_RADIUS_CHUNKS: i32 = 2;
 
@@ -117,14 +119,17 @@ pub struct Chunk {
     pub dirt_patches: Vec<Point>,
 }
 
-pub fn generate_chunk(cx: i32, cy: i32) -> Chunk {
+pub fn generate_chunk(cx: i32, cy: i32, terrain: &Terrain) -> Chunk {
     let grass_variant = chunk_rand_int(cx, cy, 1, 3);
     let outcrop_count = chunk_rand_int(cx, cy, 2, 4); // 0..=3
     let tree_count = chunk_rand_int(cx, cy, 3, 3); // 0..=2
     let (ox, oy) = (cx * CHUNK, cy * CHUNK);
 
-    // Nothing spawns on a main road or inside the basecamp.
-    let clear = |x: f32, y: f32, m: f32| !on_road(x, y, m) && !in_camp(x, y, m);
+    // Nothing spawns on a main road, inside the basecamp, or on ground you
+    // can't stand on (lakes, farms, dense forest, cliffs) or wade through.
+    let clear = |x: f32, y: f32, m: f32| {
+        !on_road(x, y, m) && !in_camp(x, y, m) && terrain.ground(x, y) == Ground::Open
+    };
 
     let outcrops = (0..outcrop_count)
         .map(|i| Outcrop {
@@ -196,10 +201,11 @@ mod tests {
 
     #[test]
     fn chunks_are_stable_and_within_bounds() {
+        let t = Terrain::default();
         for cx in -6..=6 {
             for cy in -6..=6 {
-                let a = generate_chunk(cx, cy);
-                let b = generate_chunk(cx, cy);
+                let a = generate_chunk(cx, cy, &t);
+                let b = generate_chunk(cx, cy, &t);
                 assert_eq!(a.outcrops.len(), b.outcrops.len());
                 assert!(a.outcrops.len() <= 3 && a.trees.len() <= 2 && a.dirt_patches.len() <= 1);
                 assert!((0..3).contains(&a.grass_variant));
@@ -213,9 +219,10 @@ mod tests {
 
     #[test]
     fn nothing_spawns_on_roads_or_in_camp() {
+        let t = Terrain::default();
         for cx in -12..=12 {
             for cy in -12..=12 {
-                let c = generate_chunk(cx, cy);
+                let c = generate_chunk(cx, cy, &t);
                 for o in &c.outcrops {
                     assert!(!on_road(o.x, o.y, 0.0) && !in_camp(o.x, o.y, 0.0), "{:?}", o);
                 }
@@ -224,6 +231,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn nothing_spawns_on_water_farms_forest_or_cliffs() {
+        let t = Terrain::default();
+        let mut outcrops = 0;
+        for cx in -14..=14 {
+            for cy in -14..=14 {
+                let c = generate_chunk(cx, cy, &t);
+                for o in &c.outcrops {
+                    outcrops += 1;
+                    assert_eq!(t.ground(o.x, o.y), Ground::Open, "{:?}", o);
+                }
+                for tr in &c.trees {
+                    assert_eq!(t.ground(tr.x, tr.y), Ground::Open);
+                }
+                for d in &c.dirt_patches {
+                    assert_eq!(t.ground(d.x, d.y), Ground::Open);
+                }
+            }
+        }
+        assert!(outcrops > 200);
     }
 
     #[test]

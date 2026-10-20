@@ -5,6 +5,7 @@
 //! main roads to the drop point -> explore and break outcrops -> reach a main
 //! road before sunset (or lose) -> truck drives back -> sleep -> next morning.
 
+use crate::terrain::{effort_factor, speed_factor, Ground, Terrain};
 use crate::world::*;
 use std::collections::{HashMap, HashSet};
 
@@ -165,11 +166,19 @@ pub struct Game {
     pub chunks: HashMap<(i32, i32), Chunk>,
     pub visited: HashSet<String>,
     pub rng: Rng,
+    pub terrain: Terrain,
+    /// Grade (rise/run) of the last step taken; 0 when standing still.
+    pub move_grade: f32,
+    block_cooldown: u32,
     pub game_over_stats: Option<(u32, u32, usize)>, // day, points, cards
 }
 
 impl Game {
     pub fn new(seed: u64) -> Self {
+        Self::with_terrain(seed, Terrain::default())
+    }
+
+    pub fn with_terrain(seed: u64, terrain: Terrain) -> Self {
         let mut g = Game {
             player: Player { x: CAMP_SPAWN.0, y: CAMP_SPAWN.1, facing: 1 },
             truck: Truck { x: TRUCK_SPOT.0, y: TRUCK_SPOT.1, dx: 1.0, dy: 0.0 },
@@ -195,6 +204,9 @@ impl Game {
             chunks: HashMap::new(),
             visited: HashSet::new(),
             rng: Rng::new(seed),
+            terrain,
+            move_grade: 0.0,
+            block_cooldown: 0,
             game_over_stats: None,
         };
         g.set_banner("Day 1 - Basecamp".to_string());
@@ -247,7 +259,8 @@ impl Game {
         if self.phase == Phase::GameOver {
             if input.restart_pressed {
                 let seed = self.rng.next_u32() as u64 ^ ((self.tick_count as u64) << 20);
-                *self = Game::new(seed);
+                let terrain = self.terrain.clone();
+                *self = Game::with_terrain(seed, terrain);
             }
             self.tick_count += 1;
             return;
@@ -537,31 +550,86 @@ impl Game {
         if self.energy <= 0.0 { PLAYER_SPEED * 0.5 } else { PLAYER_SPEED }
     }
 
+    /// Elevation (m) under the player.
+    pub fn elevation_here(&self) -> f32 {
+        self.terrain.elevation(self.player.x, self.player.y)
+    }
+
+    pub fn ground_here(&self) -> Ground {
+        self.terrain.ground(self.player.x, self.player.y)
+    }
+
+    /// Move from (px, py) to (nx, ny), sliding along obstacles. Returns the
+    /// reached position and the ground that stopped us, if any.
+    fn collide(&self, px: f32, py: f32, nx: f32, ny: f32) -> ((f32, f32), Option<Ground>) {
+        let g = self.terrain.ground(nx, ny);
+        if !g.blocked() {
+            return ((nx, ny), None);
+        }
+        // slide along the axis that moves most first
+        let order = if (nx - px).abs() >= (ny - py).abs() { [(nx, py), (px, ny)] } else { [(px, ny), (nx, py)] };
+        for (sx, sy) in order {
+            if (sx, sy) != (px, py) && !self.terrain.blocked(sx, sy) {
+                return ((sx, sy), None);
+            }
+        }
+        ((px, py), Some(g))
+    }
+
     fn handle_movement(&mut self, input: &Input) {
-        let speed = self.current_speed();
+        self.block_cooldown = self.block_cooldown.saturating_sub(1);
+        self.move_grade = 0.0;
+        let base = self.current_speed();
         let (ox, oy) = (self.player.x, self.player.y);
         let dx = input.right as i32 - input.left as i32;
         let dy = input.up as i32 - input.down as i32;
+
+        // desired unit direction and, for click-to-move, the distance left
+        let mut want: Option<(f32, f32, Option<f32>)> = None;
         if dx != 0 || dy != 0 {
             self.move_target = None; // manual movement cancels click-to-move
             self.pending = Pending::None;
             let mag = ((dx * dx + dy * dy) as f32).sqrt();
-            self.player.x += dx as f32 / mag * speed;
-            self.player.y += dy as f32 / mag * speed;
+            want = Some((dx as f32 / mag, dy as f32 / mag, None));
             if dx != 0 {
                 self.player.facing = if dx < 0 { -1 } else { 1 };
             }
         } else if let Some((tx, ty)) = self.move_target {
-            let (vx, vy) = (tx - self.player.x, ty - self.player.y);
+            let (vx, vy) = (tx - ox, ty - oy);
             let dist = (vx * vx + vy * vy).sqrt();
-            if dist < speed {
-                self.player.x = tx;
-                self.player.y = ty;
+            if dist <= 1e-4 {
                 self.move_target = None;
             } else {
-                self.player.x += vx / dist * speed;
-                self.player.y += vy / dist * speed;
+                want = Some((vx / dist, vy / dist, Some(dist)));
                 self.player.facing = if vx < 0.0 { -1 } else { 1 };
+            }
+        }
+
+        let on_foot_in_field = self.phase == Phase::Exploring;
+        let mut effort = 1.0;
+        if let Some((ux, uy, left)) = want {
+            let (mut factor, mut grade) = (1.0, 0.0);
+            if on_foot_in_field {
+                grade = self.terrain.grade_toward(ox, oy, ux, uy);
+                factor = speed_factor(grade) * self.ground_here().surface_speed();
+                effort = effort_factor(grade);
+            }
+            let step = (base * factor).min(left.unwrap_or(f32::MAX));
+            let (nx, ny) = (ox + ux * step, oy + uy * step);
+            let ((fx, fy), stopped_by) = if on_foot_in_field { self.collide(ox, oy, nx, ny) } else { ((nx, ny), None) };
+            self.player.x = fx;
+            self.player.y = fy;
+            self.move_grade = grade;
+            if let Some(g) = stopped_by {
+                // fully blocked: give up the queued walk and say why
+                self.move_target = None;
+                self.pending = Pending::None;
+                if self.block_cooldown == 0 {
+                    self.block_cooldown = 90;
+                    self.spawn_popup(ox, oy + 60.0, g.block_message(), (255, 190, 120));
+                }
+            } else if left.is_some_and(|d| step >= d - 1e-4) && (fx, fy) == (nx, ny) {
+                self.move_target = None; // arrived
             }
         }
 
@@ -569,9 +637,9 @@ impl Game {
             // on foot at camp you can wander the camp and the road in front of it
             self.player.x = self.player.x.clamp(CAMP.0 - 120.0, CAMP.2 + 120.0);
             self.player.y = self.player.y.clamp(-ROAD_W / 2.0 - 40.0, CAMP.3 + 60.0);
-        } else if self.phase == Phase::Exploring {
+        } else if on_foot_in_field {
             let moved = ((self.player.x - ox).powi(2) + (self.player.y - oy).powi(2)).sqrt();
-            self.energy = (self.energy - moved * ENERGY_DRAIN_PER_TICK / PLAYER_SPEED).max(0.0);
+            self.energy = (self.energy - moved * ENERGY_DRAIN_PER_TICK / PLAYER_SPEED * effort).max(0.0);
         }
     }
 
@@ -581,7 +649,7 @@ impl Game {
         for dx in -VIEW_RADIUS_CHUNKS..=VIEW_RADIUS_CHUNKS {
             for dy in -VIEW_RADIUS_CHUNKS..=VIEW_RADIUS_CHUNKS {
                 let key = (pcx + dx, pcy + dy);
-                self.chunks.entry(key).or_insert_with(|| generate_chunk(key.0, key.1));
+                self.chunks.entry(key).or_insert_with(|| generate_chunk(key.0, key.1, &self.terrain));
             }
         }
     }
@@ -680,6 +748,11 @@ impl Game {
 mod tests {
     use super::*;
 
+    /// Old rules were written for a flat world: keep those tests on flat ground.
+    fn new_game(seed: u64) -> Game {
+        Game::with_terrain(seed, Terrain::flat())
+    }
+
     fn idle() -> Input {
         Input::default()
     }
@@ -708,7 +781,7 @@ mod tests {
 
     #[test]
     fn starts_at_basecamp_with_gdd_defaults() {
-        let g = Game::new(1);
+        let g = new_game(1);
         assert_eq!((g.outcrop_points, g.xp, g.inventory_count), (0, 10, 0));
         assert_eq!((g.phase, g.day), (Phase::Basecamp, 1));
         assert!(in_camp(g.player.x, g.player.y, 0.0));
@@ -717,7 +790,7 @@ mod tests {
 
     #[test]
     fn cannot_board_when_far_from_truck_or_break_rocks_at_camp() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         g.tick(&press_e()); // spawn point is ~230 away from the truck
         assert_eq!(g.phase, Phase::Basecamp);
         g.tick(&Input { space_pressed: true, ..idle() });
@@ -726,7 +799,7 @@ mod tests {
 
     #[test]
     fn full_day_loop_with_pickup() {
-        let mut g = Game::new(5);
+        let mut g = new_game(5);
         // walk to the truck then board
         g.player.x = g.truck.x;
         g.player.y = g.truck.y + 60.0;
@@ -772,7 +845,7 @@ mod tests {
 
     #[test]
     fn missing_the_road_at_sunset_is_game_over_then_restart() {
-        let mut g = Game::new(9);
+        let mut g = new_game(9);
         exploring_at(&mut g, 700.0, 700.0);
         g.outcrop_points = 40;
         let total = (SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE;
@@ -791,7 +864,7 @@ mod tests {
 
     #[test]
     fn being_on_the_road_at_sunset_gets_you_picked_up() {
-        let mut g = Game::new(9);
+        let mut g = new_game(9);
         exploring_at(&mut g, 1600.0 + 30.0, 1200.0);
         g.clock_ticks = (SUNSET_MIN - DAY_START_MIN) * TICKS_PER_MINUTE - 3;
         for _ in 0..6 {
@@ -804,7 +877,7 @@ mod tests {
 
     #[test]
     fn noon_supply_restores_energy_once() {
-        let mut g = Game::new(3);
+        let mut g = new_game(3);
         exploring_at(&mut g, 700.0, 700.0);
         g.energy = 10.0;
         g.clock_ticks = (SUPPLY_MIN - DAY_START_MIN) * TICKS_PER_MINUTE - 1;
@@ -820,7 +893,7 @@ mod tests {
 
     #[test]
     fn exhausted_player_moves_at_half_speed() {
-        let mut g = Game::new(3);
+        let mut g = new_game(3);
         exploring_at(&mut g, 700.0, 700.0);
         g.energy = 0.0;
         g.tick(&Input { right: true, ..idle() });
@@ -831,7 +904,7 @@ mod tests {
     fn drop_points_vary_but_always_land_next_to_a_road() {
         let mut seen = HashSet::new();
         for seed in 1..40u64 {
-            let mut g = Game::new(seed * 7919);
+            let mut g = new_game(seed * 7919);
             g.player.x = g.truck.x;
             g.player.y = g.truck.y;
             g.tick(&press_e());
@@ -845,7 +918,7 @@ mod tests {
 
     #[test]
     fn walking_generates_chunks_and_normalizes_diagonals() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         exploring_at(&mut g, 700.0, 700.0);
         let (x0, y0) = (g.player.x, g.player.y);
         g.tick(&Input { right: true, up: true, ..idle() });
@@ -860,7 +933,7 @@ mod tests {
 
     #[test]
     fn click_to_move_arrives_and_manual_input_cancels() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         exploring_at(&mut g, 700.0, 700.0);
         g.tick(&Input { click: Some((SCREEN_W / 2.0 + 200.0, SCREEN_H / 2.0)), ..idle() });
         assert!(g.move_target.is_some());
@@ -885,7 +958,7 @@ mod tests {
 
     #[test]
     fn breaking_awards_once_then_marks_visited() {
-        let mut g = Game::new(7);
+        let mut g = new_game(7);
         let o = walk_to_first_outcrop(&mut g);
         g.tick(&Input { space_pressed: true, ..idle() });
         assert_eq!(g.outcrop_points, 10);
@@ -898,7 +971,7 @@ mod tests {
 
     #[test]
     fn inventory_never_exceeds_cap_and_drop_rate_is_about_5_percent() {
-        let mut g = Game::new(42);
+        let mut g = new_game(42);
         g.player.x = 0.0;
         g.player.y = 0.0;
         let mut minerals = 0;
@@ -918,7 +991,7 @@ mod tests {
 
     #[test]
     fn overlays_toggle_and_suspend_movement_and_page_wraps() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         let x0 = g.player.x;
         g.tick(&Input { map_pressed: true, ..idle() });
         assert_eq!(g.ui_mode, UiMode::Map);
@@ -934,7 +1007,7 @@ mod tests {
 
     #[test]
     fn camp_walk_is_bounded() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         for _ in 0..3000 {
             g.tick(&Input { left: true, down: true, ..idle() });
         }
@@ -943,7 +1016,7 @@ mod tests {
 
     #[test]
     fn popups_expire_and_night_follows_the_field_clock() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         g.spawn_popup(0.0, 0.0, "x", (0, 0, 0));
         for _ in 0..POPUP_LIFE {
             g.tick(&idle());
@@ -965,7 +1038,7 @@ mod tests {
 
     #[test]
     fn tapping_a_nearby_outcrop_breaks_it_without_moving() {
-        let mut g = Game::new(7);
+        let mut g = new_game(7);
         let o = walk_to_first_outcrop(&mut g);
         g.player.x = o.x + 20.0;
         let click = outcrop_screen_click(&g, &o);
@@ -978,7 +1051,7 @@ mod tests {
 
     #[test]
     fn tapping_a_far_outcrop_walks_there_then_breaks() {
-        let mut g = Game::new(7);
+        let mut g = new_game(7);
         let o = walk_to_first_outcrop(&mut g);
         g.player.x = o.x - 300.0;
         g.player.y = o.y;
@@ -996,7 +1069,7 @@ mod tests {
 
     #[test]
     fn manual_movement_cancels_a_queued_break() {
-        let mut g = Game::new(7);
+        let mut g = new_game(7);
         let o = walk_to_first_outcrop(&mut g);
         g.player.x = o.x - 300.0;
         g.player.y = o.y;
@@ -1013,7 +1086,7 @@ mod tests {
 
     #[test]
     fn tapping_the_truck_walks_over_and_boards() {
-        let mut g = Game::new(11);
+        let mut g = new_game(11);
         let (cx, cy) = g.cam();
         g.tick(&Input { click: Some((g.truck.x - cx, g.truck.y - cy)), ..idle() });
         assert_eq!(g.pending, Pending::Board);
@@ -1029,12 +1102,130 @@ mod tests {
 
     #[test]
     fn tapping_bare_ground_still_just_walks() {
-        let mut g = Game::new(1);
+        let mut g = new_game(1);
         exploring_at(&mut g, 700.0, 700.0);
         // a spot with no outcrop within pick radius
         g.chunks.values_mut().for_each(|c| c.outcrops.clear());
         g.tick(&Input { click: Some((SCREEN_W / 2.0 + 120.0, SCREEN_H / 2.0)), ..idle() });
         assert_eq!(g.pending, Pending::None);
         assert!(g.move_target.is_some());
+    }
+
+    // ------------------------------------------------------------- terrain
+    fn find_spot(t: &Terrain, ok: impl Fn(&Terrain, f32, f32) -> bool) -> (f32, f32) {
+        for i in -150..150 {
+            for j in -150..150 {
+                let (x, y) = (i as f32 * 41.0, j as f32 * 43.0);
+                if ok(t, x, y) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("no matching spot on the default terrain");
+    }
+
+    #[test]
+    fn climbing_is_slower_and_costlier_than_descending() {
+        let mut g = Game::new(1);
+        let (x, y) = find_spot(&g.terrain, |t, x, y| {
+            t.ground(x, y) == Ground::Open
+                && t.grade_toward(x, y, 1.0, 0.0) > 0.2
+                && t.grade_toward(x, y, 1.0, 0.0) < 0.5
+                && !t.blocked(x - 12.0, y)
+                && !t.blocked(x + 12.0, y)
+        });
+        let measure = |g: &mut Game, dir_right: bool| {
+            exploring_at(g, x, y);
+            g.energy = ENERGY_MAX;
+            let input = if dir_right { Input { right: true, ..idle() } } else { Input { left: true, ..idle() } };
+            g.tick(&input);
+            ((g.player.x - x).abs(), ENERGY_MAX - g.energy, g.move_grade)
+        };
+        let (up_step, up_cost, up_grade) = measure(&mut g, true);
+        let (dn_step, dn_cost, dn_grade) = measure(&mut g, false);
+        assert!(up_grade > 0.0 && dn_grade < 0.0, "{up_grade} {dn_grade}");
+        assert!(up_step < PLAYER_SPEED && dn_step > PLAYER_SPEED, "{up_step} {dn_step}");
+        assert!(up_cost / up_step > dn_cost / dn_step * 1.5, "per-metre cost {} vs {}", up_cost / up_step, dn_cost / dn_step);
+    }
+
+    #[test]
+    fn flat_ground_keeps_the_original_speed_and_energy_rate() {
+        let mut g = new_game(1);
+        exploring_at(&mut g, 700.0, 700.0);
+        let e0 = g.energy;
+        g.tick(&Input { right: true, ..idle() });
+        assert!((g.player.x - 704.2).abs() < 1e-3);
+        assert!((e0 - g.energy - ENERGY_DRAIN_PER_TICK).abs() < 1e-5);
+    }
+
+    #[test]
+    fn obstacles_cannot_be_walked_into() {
+        let mut g = Game::new(1);
+        // an open spot with blocked ground a short way to the east
+        let (x, y) = find_spot(&g.terrain, |t, x, y| {
+            t.ground(x, y) == Ground::Open && t.blocked(x + 60.0, y) && t.blocked(x + 60.0, y + 30.0) && t.blocked(x + 60.0, y - 30.0)
+        });
+        exploring_at(&mut g, x, y);
+        for _ in 0..200 {
+            g.tick(&Input { right: true, ..idle() });
+            assert!(!g.terrain.blocked(g.player.x, g.player.y), "walked into {:?}", g.ground_here());
+        }
+        assert!(g.player.x < x + 60.0);
+        assert!(g.popups.iter().any(|p| !p.text.is_empty()), "no explanation shown");
+    }
+
+    #[test]
+    fn click_to_move_stops_at_the_edge_of_an_obstacle() {
+        let mut g = Game::new(1);
+        let (x, y) = find_spot(&g.terrain, |t, x, y| {
+            t.ground(x, y) == Ground::Open && (1..=8).all(|k| t.blocked(x + 40.0 + k as f32 * 30.0, y))
+        });
+        exploring_at(&mut g, x, y);
+        // tap a point inside the obstacle (screen coords are relative to the camera)
+        let (cx, cy) = g.cam();
+        g.tick(&Input { click: Some((x + 200.0 - cx, y - cy)), ..idle() });
+        for _ in 0..300 {
+            g.tick(&idle());
+            assert!(!g.terrain.blocked(g.player.x, g.player.y));
+        }
+        assert!(g.move_target.is_none());
+    }
+
+    #[test]
+    fn sliding_along_an_obstacle_keeps_you_moving() {
+        let mut g = Game::new(1);
+        // blocked to the east, free to the north
+        let (x, y) = find_spot(&g.terrain, |t, x, y| {
+            t.ground(x, y) == Ground::Open
+                && t.blocked(x + 8.0, y)
+                && t.blocked(x + 8.0, y + 40.0)
+                && !t.blocked(x, y + 40.0)
+                && !t.blocked(x, y + 10.0)
+        });
+        exploring_at(&mut g, x, y);
+        g.tick(&Input { right: true, up: true, ..idle() });
+        assert!(g.player.y > y, "should slide north");
+        assert!(!g.terrain.blocked(g.player.x, g.player.y));
+    }
+
+    #[test]
+    fn basecamp_and_truck_ride_ignore_terrain() {
+        let mut g = Game::new(5);
+        g.player.x = g.truck.x;
+        g.player.y = g.truck.y + 60.0;
+        g.tick(&press_e());
+        assert_eq!(g.phase, Phase::TruckOut);
+        run_ride(&mut g);
+        assert_eq!(g.phase, Phase::Exploring);
+        assert!(!g.terrain.blocked(g.player.x, g.player.y), "dropped into an obstacle");
+    }
+
+    #[test]
+    fn restart_keeps_the_same_terrain() {
+        let mut g = Game::with_terrain(9, Terrain { relief: 1.25, ..Terrain::default() });
+        exploring_at(&mut g, 700.0, 700.0);
+        g.phase = Phase::GameOver;
+        g.tick(&Input { restart_pressed: true, ..idle() });
+        assert_eq!(g.terrain.relief, 1.25);
     }
 }

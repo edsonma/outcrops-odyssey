@@ -1,10 +1,12 @@
 mod game;
+mod terrain;
 mod touch;
 mod world;
 
 use game::*;
 use macroquad::prelude::*;
 use std::collections::{HashMap, HashSet};
+use terrain::*;
 use touch::{Tap, TouchState};
 use world::*;
 
@@ -146,6 +148,7 @@ fn render_world(g: &Game, a: &Assets) {
         }
     }
 
+    render_terrain(g, a);
     render_roads(g);
     render_camp(g, a);
 
@@ -172,6 +175,220 @@ fn render_world(g: &Game, a: &Assets) {
         if !visited {
             let bob = ((g.tick_count as f32 / 20.0) + o.x).sin() * 3.0;
             sprite(a, "sparkle", ox + 22.0, oy + 44.0 + bob, 28.0, 28.0, 200, false);
+        }
+    }
+}
+
+// ---- terrain: relief tint, contour lines, water, farms, forest, cliffs ----
+
+fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
+}
+
+/// Hypsometric tint: low ground dark green, uplands olive and tan, peaks pale.
+fn elev_rgb(e: f32) -> (u8, u8, u8) {
+    const STOPS: [(f32, (u8, u8, u8)); 5] = [
+        (0.0, (40, 90, 62)),
+        (0.35, (88, 132, 72)),
+        (0.60, (152, 152, 92)),
+        (0.80, (172, 142, 112)),
+        (1.0, (236, 236, 232)),
+    ];
+    let t = (e / ELEV_MAX).clamp(0.0, 1.0);
+    for w in STOPS.windows(2) {
+        if t <= w[1].0 {
+            return lerp_rgb(w[0].1, w[1].1, (t - w[0].0) / (w[1].0 - w[0].0));
+        }
+    }
+    STOPS[4].1
+}
+
+fn tiny_hash(a: i32, b: i32) -> f32 {
+    let mut h = (a as u32).wrapping_mul(0x9E37_79B1) ^ (b as u32).wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 13;
+    (h & 0xFFFF) as f32 / 65535.0
+}
+
+fn render_terrain(g: &Game, a: &Assets) {
+    let t = &g.terrain;
+    if t.flat {
+        return;
+    }
+    let (cam_x, cam_y) = g.cam();
+    const S: f32 = 24.0;
+    let gx0 = (cam_x / S).floor() as i32 - 1;
+    let gy0 = (cam_y / S).floor() as i32 - 1;
+    let nx = (SCREEN_W / S).ceil() as i32 + 3;
+    let ny = (SCREEN_H / S).ceil() as i32 + 3;
+    let w = (nx + 1) as usize;
+    let mut elev = vec![0.0f32; w * (ny as usize + 1)];
+    for j in 0..=ny {
+        for i in 0..=nx {
+            elev[j as usize * w + i as usize] = t.elevation((gx0 + i) as f32 * S, (gy0 + j) as f32 * S);
+        }
+    }
+    let at = |i: i32, j: i32| elev[j as usize * w + i as usize];
+    let to_screen = |wx: f32, wy: f32| (wx - cam_x, SCREEN_H - (wy - cam_y));
+    let shimmer = (g.tick_count as f32 / 40.0).sin();
+
+    // pass 1: relief tint and ground cover
+    let mut forest_cells: Vec<(i32, i32, f32, f32)> = Vec::new();
+    for j in 0..ny {
+        for i in 0..nx {
+            let (wx, wy) = ((gx0 + i) as f32 * S, (gy0 + j) as f32 * S);
+            let (e00, e10, e11, e01) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            let avg = (e00 + e10 + e11 + e01) / 4.0;
+            let steep = (((e10 + e11 - e00 - e01) / 2.0) / S).hypot(((e01 + e11 - e00 - e10) / 2.0) / S);
+            let ground = t.classify(wx + S / 2.0, wy + S / 2.0, avg, steep);
+            let (sx, sy) = (wx - cam_x, wy - cam_y);
+            match ground {
+                Ground::Open | Ground::Farm => {
+                    let (r, gr, b) = elev_rgb(avg);
+                    solid(sx, sy, S + 1.0, S + 1.0, col(r, gr, b, 70));
+                }
+                Ground::Lake => {
+                    let k = ((avg / WATER_LEVEL).clamp(0.0, 1.0) * 40.0) as u8;
+                    solid(sx, sy, S + 1.0, S + 1.0, col(36 + k / 2, 92 + k, 160 + k / 2, 240));
+                    if tiny_hash(gx0 + i, gy0 + j) > 0.86 {
+                        solid(sx + 4.0, sy + 10.0 + shimmer * 2.0, 14.0, 2.0, col(190, 225, 250, 120));
+                    }
+                }
+                Ground::River => solid(sx, sy, S + 1.0, S + 1.0, col(88, 154, 210, 225)),
+                Ground::Cliff => {
+                    solid(sx, sy, S + 1.0, S + 1.0, col(110, 102, 94, 235));
+                    if tiny_hash(gx0 + i, gy0 + j) > 0.6 {
+                        solid(sx + 3.0, sy + 6.0, 16.0, 3.0, col(70, 64, 58, 200));
+                    }
+                }
+                Ground::Forest => {
+                    solid(sx, sy, S + 1.0, S + 1.0, col(22, 62, 34, 215));
+                    if (gx0 + i).rem_euclid(3) == 0 && (gy0 + j).rem_euclid(3) == 0 {
+                        let jx = (tiny_hash(gx0 + i, gy0 + j) - 0.5) * 30.0;
+                        let jy = (tiny_hash(gy0 + j, gx0 + i) - 0.5) * 30.0;
+                        forest_cells.push((gx0 + i, gy0 + j, wx + S / 2.0 + jx, wy + S / 2.0 + jy));
+                    }
+                }
+            }
+        }
+    }
+
+    // fenced farms (drawn as rectangles with crop rows and fence posts)
+    let ci0 = (cam_x / FARM_CELL).floor() as i32 - 1;
+    let cj0 = (cam_y / FARM_CELL).floor() as i32 - 1;
+    for ci in ci0..=ci0 + 3 {
+        for cj in cj0..=cj0 + 2 {
+            let Some((x0, y0, x1, y1)) = t.farm_rect(ci, cj) else { continue };
+            if x1 < cam_x - 20.0 || x0 > cam_x + SCREEN_W + 20.0 || y1 < cam_y - 20.0 || y0 > cam_y + SCREEN_H + 20.0 {
+                continue;
+            }
+            wsolid(g, x0 - 7.0, y0 - 7.0, x1 - x0 + 14.0, y1 - y0 + 14.0, col(96, 70, 44, 255));
+            wsolid(g, x0, y0, x1 - x0, y1 - y0, col(120, 138, 56, 255));
+            let (mut y, mut k) = (y0 + 10.0, 0);
+            while y < y1 - 22.0 {
+                wsolid(g, x0 + 10.0, y, x1 - x0 - 20.0, 13.0, if k % 2 == 0 { col(142, 166, 64, 255) } else { col(176, 156, 72, 255) });
+                y += 27.0;
+                k += 1;
+            }
+            let post = col(70, 48, 28, 255);
+            let mut x = x0;
+            while x <= x1 {
+                wsolid(g, x - 3.0, y0 - 11.0, 6.0, 16.0, post);
+                wsolid(g, x - 3.0, y1 - 5.0, 6.0, 16.0, post);
+                x += 46.0;
+            }
+            let mut y = y0;
+            while y <= y1 {
+                wsolid(g, x0 - 11.0, y - 3.0, 16.0, 6.0, post);
+                wsolid(g, x1 - 5.0, y - 3.0, 16.0, 6.0, post);
+                y += 46.0;
+            }
+        }
+    }
+
+    // pass 2: contour lines (heavier every INDEX_EVERY-th level, not over water)
+    for j in 0..ny {
+        for i in 0..nx {
+            let v = [at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)];
+            let (lo, hi) = (v.iter().cloned().fold(f32::MAX, f32::min), v.iter().cloned().fold(f32::MIN, f32::max));
+            if hi < t.water_level {
+                continue;
+            }
+            let (wx, wy) = ((gx0 + i) as f32 * S, (gy0 + j) as f32 * S);
+            let k0 = (lo / CONTOUR_INTERVAL).ceil() as i32;
+            let k1 = (hi / CONTOUR_INTERVAL).floor() as i32;
+            for k in k0..=k1 {
+                let level = k as f32 * CONTOUR_INTERVAL;
+                let index = k % INDEX_EVERY == 0;
+                let c = if index { col(88, 56, 28, 210) } else { col(112, 78, 42, 120) };
+                for ((ax, ay), (bx, by)) in contour_segments(v, level) {
+                    let (x1, y1) = to_screen(wx + ax * S, wy + ay * S);
+                    let (x2, y2) = to_screen(wx + bx * S, wy + by * S);
+                    draw_line(x1, y1, x2, y2, if index { 2.0 } else { 1.0 }, c);
+                }
+            }
+        }
+    }
+
+    // pass 3: forest canopy, back to front
+    forest_cells.sort_by(|p, q| q.3.partial_cmp(&p.3).unwrap());
+    for (_, _, tx, ty) in forest_cells {
+        sprite(a, "tree_shadow", tx - cam_x - 36.0, ty - cam_y - 12.0, 72.0, 28.0, 200, false);
+        sprite(a, "tree", tx - cam_x - 48.0, ty - cam_y - 6.0, 96.0, 110.0, 255, false);
+    }
+}
+
+/// Terrain for the map overlay: only chunks you have explored are revealed.
+fn render_map_terrain(g: &Game, ox: f32, oy: f32, wmin_x: f32, wmin_y: f32, world_w: f32, world_h: f32, scale: f32) {
+    let t = &g.terrain;
+    if t.flat {
+        return;
+    }
+    const PX: f32 = 8.0;
+    let (nx, ny) = ((world_w * scale / PX).ceil() as i32, (world_h * scale / PX).ceil() as i32);
+    let cell = PX / scale; // world size of one map cell
+    let w = (nx + 1) as usize;
+    let mut elev = vec![0.0f32; w * (ny as usize + 1)];
+    for j in 0..=ny {
+        for i in 0..=nx {
+            elev[j as usize * w + i as usize] = t.elevation(wmin_x + i as f32 * cell, wmin_y + j as f32 * cell);
+        }
+    }
+    let at = |i: i32, j: i32| elev[j as usize * w + i as usize];
+    for j in 0..ny {
+        for i in 0..nx {
+            let (wx, wy) = (wmin_x + i as f32 * cell, wmin_y + j as f32 * cell);
+            if !g.chunks.contains_key(&world_to_chunk(wx + cell / 2.0, wy + cell / 2.0)) {
+                continue;
+            }
+            let (e00, e10, e11, e01) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            let avg = (e00 + e10 + e11 + e01) / 4.0;
+            let steep = (((e10 + e11 - e00 - e01) / 2.0) / cell).hypot(((e01 + e11 - e00 - e10) / 2.0) / cell);
+            let ground = t.classify(wx + cell / 2.0, wy + cell / 2.0, avg, steep);
+            let (r, gr, b) = match ground {
+                Ground::Open => elev_rgb(avg),
+                Ground::Farm => (190, 176, 92),
+                Ground::Lake => (58, 118, 188),
+                Ground::River => (110, 172, 222),
+                Ground::Forest => (30, 86, 46),
+                Ground::Cliff => (126, 118, 110),
+            };
+            solid(ox + i as f32 * PX, oy + j as f32 * PX, PX + 0.5, PX + 0.5, col(r, gr, b, 255));
+            if ground.is_water() {
+                continue;
+            }
+            let v = [e00, e10, e11, e01];
+            let (lo, hi) = (v.iter().cloned().fold(f32::MAX, f32::min), v.iter().cloned().fold(f32::MIN, f32::max));
+            let step = CONTOUR_INTERVAL * INDEX_EVERY as f32;
+            for k in (lo / step).ceil() as i32..=(hi / step).floor() as i32 {
+                for ((ax, ay), (bx, by)) in contour_segments(v, k as f32 * step) {
+                    let (x1, y1) = (ox + (i as f32 + ax) * PX, SCREEN_H - (oy + (j as f32 + ay) * PX));
+                    let (x2, y2) = (ox + (i as f32 + bx) * PX, SCREEN_H - (oy + (j as f32 + by) * PX));
+                    draw_line(x1, y1, x2, y2, 1.2, col(70, 44, 22, 170));
+                }
+            }
         }
     }
 }
@@ -339,6 +556,8 @@ fn render_map_overlay(g: &Game, a: &Assets) {
         let margin = 30.0;
         let scale = ((pw - margin * 2.0) / world_w).min((ph - margin * 2.0) / world_h);
 
+        render_map_terrain(g, px + margin, py + margin, wmin_x, wmin_y, world_w, world_h, scale);
+
         // main roads and the basecamp
         let (span_w, span_h) = (world_w * scale, world_h * scale);
         let j0 = (wmin_y / ROAD_SPACING).ceil() as i32;
@@ -370,8 +589,10 @@ fn render_map_overlay(g: &Game, a: &Assets) {
         let ppy = py + margin + (g.player.y - wmin_y) * scale;
         solid(ppx - 5.0, ppy - 5.0, 10.0, 10.0, col(235, 60, 60, 255));
     }
-    label(a, "Yellow = raw   Green = visited   Red = you   Blue = basecamp   Gray = main roads   .   M to close",
+    label(a, "Yellow = raw   Green = visited   Red = you   Blue sq = basecamp   Gray lines = main roads   .   M to close",
         px + pw / 2.0, py - 14.0, -1, true, col(220, 220, 220, 200), false);
+    label(a, "Brown lines = contours (every 75 m)   Blue = water   Dark green = dense forest   Gray = cliffs   Tan = farm",
+        px + pw / 2.0, py - 36.0, -1, true, col(200, 205, 200, 190), false);
 }
 
 fn render_cards_overlay(g: &Game, a: &Assets) {
@@ -409,6 +630,14 @@ fn render_ui(g: &Game, a: &Assets, touch: bool) {
     solid(bx, by, bw * f, bh, if f > 0.25 { col(110, 200, 110, 230) } else { col(220, 90, 70, 230) });
     border(bx, by, bw, bh, col(255, 255, 255, 120));
     label(a, "Energy", bx + bw + 10.0, by + 14.0, -1, false, col(220, 220, 220, 200), false);
+
+    // relief readout: elevation and the slope of the last step
+    if g.phase == Phase::Exploring && !g.terrain.flat {
+        let slope = (g.move_grade * 100.0).round() as i32;
+        let c = if slope >= 8 { col(255, 190, 120, 235) } else if slope <= -8 { col(150, 220, 200, 235) } else { col(220, 220, 220, 210) };
+        let tag = if g.ground_here() == Ground::River { "   wading" } else { "" };
+        label(a, &format!("Elev {} m   Slope {:+}%{}", g.elevation_here().round() as i32, slope, tag), 24.0, SCREEN_H - 112.0, -1, false, c, false);
+    }
 
     // clock
     let m = g.minutes_of_day();
