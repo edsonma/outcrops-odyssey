@@ -857,7 +857,7 @@ fn update_hud(
         if !q.mobile {
             lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
         }
-        set_text(&mut t, if g.ui_mode == UiMode::Backpack { String::new() } else { ascii(&lines.join("\n")) });
+        set_text(&mut t, if g.ui_mode != UiMode::None { String::new() } else { ascii(&lines.join("\n")) });
     }
     if let Ok(mut t) = hint.single_mut() {
         let msg = match g.phase {

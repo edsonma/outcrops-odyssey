@@ -474,7 +474,7 @@ pub fn update_map(
         (format!("{}  -  level {}/{}", g.region.place, g.level + 1, crate::geology::REGIONS.len()), None),
     ];
     for u in g.region.units {
-        rows.push((format!("{}  ({})", u.name, u.age), Some(u.color)));
+        rows.push((u.name.to_string(), Some(u.color)));
     }
     for (c, t) in [((58u8, 118u8, 188u8), "Water"), ((24, 78, 40), "Dense forest"), ((126, 118, 110), "Cliffs"), ((230, 215, 120), "Farm"), ((170, 170, 178), "Main road")] {
         rows.push((t.to_string(), Some(c)));
@@ -482,8 +482,8 @@ pub fn update_map(
     rows.truncate(LEGEND_ROWS);
     for (mut t, kind) in &mut texts {
         match kind {
-            PanelText::MapTitle => t.0 = format!("MAP - {}", g.region.name),
-            PanelText::Legend(i) => t.0 = rows.get(*i).map(|r| r.0.clone()).unwrap_or_default(),
+            PanelText::MapTitle => t.0 = crate::ascii(&format!("MAP - {}", g.region.name)),
+            PanelText::Legend(i) => t.0 = rows.get(*i).map(|r| crate::ascii(&r.0)).unwrap_or_default(),
             _ => {}
         }
     }
