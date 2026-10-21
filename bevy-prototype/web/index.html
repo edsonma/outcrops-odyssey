@@ -33,7 +33,7 @@
     @keyframes tap { 0%,100% { transform: rotate(-18deg); } 50% { transform: rotate(22deg); } }
     #bar { width: min(560px, 88vw); height: 8px; border-radius: 4px; background: #ffffff1c; overflow: hidden; }
     #bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, #f0a04a, #ffd27a); transition: width .25s ease-out; }
-    #msg { font: 15px/1.4 system-ui, sans-serif; color: #cfd8bd; min-height: 1.4em; }
+    #msg { white-space: pre-line; font: 15px/1.4 system-ui, sans-serif; color: #cfd8bd; min-height: 1.4em; }
     #tip { max-width: 440px; font: 14px/1.5 system-ui, sans-serif; color: #98a688; }
     #splash.error h1 span, #splash.error #msg { color: #ff9c8a; }
     #splash.error .hammer { animation: none; }
@@ -106,14 +106,14 @@
 
     function fail(e) {
       splash.classList.add("error");
-      progress(0, "Could not start: " + e + "  (needs a browser with WebGL2)");
+      progress(0, "Could not start: " + e + "\nIf this keeps happening, clear this site's data in Chrome settings and reload.");
       console.error(e);
     }
 
     // Download the wasm ourselves so we can show a true percentage. The server reports the
     // uncompressed size in X-Uncompressed-Length (the body itself is brotli/gzip compressed).
     async function fetchWasm(url) {
-      const res = await fetch(url, { cache: "no-cache" });
+      const res = await fetch(url, { cache: "reload" });
       if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
       const total = Number(res.headers.get("X-Uncompressed-Length")) || Number(res.headers.get("Content-Length")) || 0;
       const compressed = !!res.headers.get("Content-Encoding");
@@ -140,7 +140,12 @@
         throw new Error("WebGL2 is not available in this browser. Turn on hardware acceleration in Chrome settings, or try another browser.");
       }
       progress(0.02, "Downloading the game…");
-      const { default: init } = await import("./outcrops_bevy.js");
+      // Load the JS glue through a blob so a copy cached by an older deploy can never be used: glue and
+      // wasm must come from the same build ("function import requires a callable" otherwise).
+      const glue = await fetch("./outcrops_bevy.js", { cache: "reload" });
+      if (!glue.ok) throw new Error("outcrops_bevy.js: HTTP " + glue.status);
+      const blobUrl = URL.createObjectURL(new Blob([await glue.text()], { type: "text/javascript" }));
+      const { default: init } = await import(blobUrl);
       const wasm = fetchWasm("./outcrops_bevy_bg.wasm");
       // hide the splash once the first frames are on screen (the engine keeps streaming textures in)
       let started = false;
