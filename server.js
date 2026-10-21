@@ -69,7 +69,10 @@ http.createServer((req, res) => {
   const headers = {
     "Content-Type": TYPES[ext] || "application/octet-stream",
     // revalidate cheaply (ETag -> 304); html always, the rest may be reused for a day
-    "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=86400, stale-while-revalidate=604800",
+    // The page, the JS glue and the .wasm are a matched set: a cached .wasm with a newer .js gives
+    // "wasm.__wasm_bindgen_func_elem_N is not a function". So they are always revalidated
+    // (ETag -> 304, costs nothing); only textures/models may be reused without asking.
+    "Cache-Control": [".html", ".js", ".wasm"].includes(ext) ? "no-cache" : "public, max-age=86400, stale-while-revalidate=604800",
     "ETag": e.etag,
     "Vary": "Accept-Encoding",
     // lets the loading screen show a true percentage even though the body is compressed

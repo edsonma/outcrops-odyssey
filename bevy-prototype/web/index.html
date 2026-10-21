@@ -98,7 +98,7 @@
     // Download the wasm ourselves so we can show a true percentage. The server reports the
     // uncompressed size in X-Uncompressed-Length (the body itself is brotli/gzip compressed).
     async function fetchWasm(url) {
-      const res = await fetch(url);
+      const res = await fetch(url, { cache: "no-cache" });
       if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
       const total = Number(res.headers.get("X-Uncompressed-Length")) || Number(res.headers.get("Content-Length")) || 0;
       const compressed = !!res.headers.get("Content-Encoding");
