@@ -31,7 +31,7 @@ const _: () = assert!(N as i32 * 16 == CHUNK);
 /// stand up as real steep, layered mountains instead of a coloured sticker on the grass.
 pub fn height_of(e: f32) -> f32 {
     let t = ((e - 198.0) / (ELEV_MAX - 198.0)).clamp(0.0, 1.0);
-    (e - BASE_ELEV) * VS + 7.0 * t.powf(1.4)
+    (e - BASE_ELEV) * VS + 20.0 * t.powf(1.1)
 }
 
 /// World height (Bevy metres) of the ground at game position (x, y).
