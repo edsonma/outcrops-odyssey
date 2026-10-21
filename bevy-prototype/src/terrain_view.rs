@@ -26,13 +26,21 @@ const STEP: f32 = 16.0;
 const N: usize = 40; // CHUNK / STEP
 const _: () = assert!(N as i32 * 16 == CHUNK);
 
+/// Elevation (game metres) -> Bevy height. Linear at VS, plus extra lift above 198 m so the
+/// summits (the impassable "cliff" massifs, which the game logic reduces to a flat-topped patch)
+/// stand up as real steep, layered mountains instead of a coloured sticker on the grass.
+pub fn height_of(e: f32) -> f32 {
+    let t = ((e - 198.0) / (ELEV_MAX - 198.0)).clamp(0.0, 1.0);
+    (e - BASE_ELEV) * VS + 7.0 * t.powf(1.4)
+}
+
 /// World height (Bevy metres) of the ground at game position (x, y).
 pub fn ground_y(t: &Terrain, x: f32, y: f32) -> f32 {
-    (t.elevation(x, y) - BASE_ELEV) * VS
+    height_of(t.elevation(x, y))
 }
 
 pub fn water_y(t: &Terrain) -> f32 {
-    (t.water_level - BASE_ELEV) * VS
+    height_of(t.water_level)
 }
 
 /// Game position -> Bevy position on the terrain surface.
@@ -179,10 +187,10 @@ pub fn build_chunk(t: &Terrain, cx: i32, cy: i32) -> ChunkGeo {
     let el = |i: i32, j: i32| e[(j + 1) as usize * w + (i + 1) as usize];
     let half = CHUNK as f32 / 2.0;
     let vert = |i: i32, j: i32| {
-        let p = Vec3::new((i as f32 * STEP - half) * S, (el(i, j) - BASE_ELEV) * VS, -(j as f32 * STEP - half) * S);
-        // dh/dx_b = (VS/S) * de/dx ;  dh/dz_b = -(VS/S) * de/dy
-        let k = VS / S / (2.0 * STEP);
-        let n = Vec3::new(-(el(i + 1, j) - el(i - 1, j)) * k, 1.0, (el(i, j + 1) - el(i, j - 1)) * k).normalize();
+        let p = Vec3::new((i as f32 * STEP - half) * S, height_of(el(i, j)), -(j as f32 * STEP - half) * S);
+        // slopes from the (exaggerated) heights: dh/dx_b = dh / (2 STEP S);  dh/dz_b = -dh/dy
+        let k = 1.0 / (2.0 * STEP * S);
+        let n = Vec3::new(-(height_of(el(i + 1, j)) - height_of(el(i - 1, j))) * k, 1.0, (height_of(el(i, j + 1)) - height_of(el(i, j - 1))) * k).normalize();
         let uv = [(ox + i as f32 * STEP) * S, -(oy + j as f32 * STEP) * S];
         (p, n, uv)
     };
@@ -235,7 +243,7 @@ pub fn build_chunk(t: &Terrain, cx: i32, cy: i32) -> ChunkGeo {
                     // rock reads as layered strata whichever way the face points
                     let uv = p.map(|v| {
                         let (wx, wz) = (v.x + ox * S + half * S, v.z - oy * S - half * S);
-                        [wx * 0.8 - wz * 0.6, v.y * 1.0 + 0.3 * (wx * 0.6 + wz * 0.8)]
+                        [wx * 0.8 - wz * 0.6, v.y * 2.0 + 0.3 * (wx * 0.6 + wz * 0.8)]
                     });
                     cliff.quad(p, n, uv, [[1.0; 4]; 4])
                 }
@@ -264,7 +272,7 @@ fn contour_cell(out: &mut Buf, es: [f32; 4], p: [Vec3; 4], avg: f32) {
         let level = k as f32 * CONTOUR_INTERVAL;
         let index = k % INDEX_EVERY == 0;
         let (w, colour) = if index { (0.085, [0.16, 0.09, 0.04, 1.0]) } else { (0.04, [0.30, 0.19, 0.10, 1.0]) };
-        let y = (level - BASE_ELEV) * VS + 0.045;
+        let y = height_of(level) + 0.045;
         // cell coordinates (u along +x, v along +y of the game) onto the corner positions
         let at = |(u, v): (f32, f32)| {
             let x = p[0].x + (p[1].x - p[0].x) * u;
