@@ -166,10 +166,12 @@
           if (go.done) return;
           go.done = true;
           $("start").onclick = null;
-          $("start").textContent = "Starting…";
+          $("start").style.display = "none";
+          $("msg").textContent = "Switching to landscape fullscreen…";   // the one-second reminder
+          const minWait = new Promise((r) => setTimeout(r, 1000));
           try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
           try { await screen.orientation?.lock?.("landscape"); } catch {}
-          await new Promise((r) => setTimeout(r, 600));       // let the canvas settle at its new size
+          await minWait;
           window.ooStarted = true;                            // starts the camera zoom-out (poll_intro in main.rs)
           splash.classList.add("go");
           setTimeout(() => splash.remove(), 1300);
