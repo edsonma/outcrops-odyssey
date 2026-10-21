@@ -129,7 +129,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(Time::<Fixed>::from_hz(60.0))
-        .insert_resource(bevy::light::DirectionalLightShadowMap { size: if cfg!(target_arch = "wasm32") { 1024 } else { 2048 } })
+        .insert_resource(bevy::light::DirectionalLightShadowMap { size: 2048 })
         .insert_resource(GameRes(Game::new(0x5eed_1234)))
         .init_resource::<PendingInput>()
         .init_resource::<ChunkEntities>()
@@ -260,9 +260,10 @@ fn setup_scene(
         Sun,
         DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: true, ..default() },
         CascadeShadowConfigBuilder {
-            num_cascades: 2,
+            // WebGL2 supports a single shadow cascade (Bevy warns and clamps otherwise)
+            num_cascades: if cfg!(target_arch = "wasm32") { 1 } else { 2 },
             first_cascade_far_bound: 10.0,
-            maximum_distance: 48.0,
+            maximum_distance: if cfg!(target_arch = "wasm32") { 38.0 } else { 48.0 },
             ..default()
         }
         .build(),
