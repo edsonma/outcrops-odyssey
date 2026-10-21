@@ -168,10 +168,15 @@
           $("start").onclick = null;
           $("start").style.display = "none";
           $("msg").textContent = "Switching to landscape fullscreen…";   // the one-second reminder
-          const minWait = new Promise((r) => setTimeout(r, 1000));
-          try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
-          try { await screen.orientation?.lock?.("landscape"); } catch {}
-          await minWait;
+          // some Android browsers never settle these promises, so nothing here may be awaited unguarded
+          const guard = (fn, ms) => new Promise((resolve) => {
+            const t = setTimeout(resolve, ms);
+            try { Promise.resolve(fn()).catch(() => {}).finally(() => { clearTimeout(t); resolve(); }); } catch { clearTimeout(t); resolve(); }
+          });
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const fsOk = guard(() => document.documentElement.requestFullscreen({ navigationUI: "hide" }), 1200);
+          const lockOk = fsOk.then(() => guard(() => screen.orientation.lock("landscape"), 1200));
+          await Promise.all([sleep(1000), lockOk]);        // at most ~2.4 s, whatever the browser does
           window.ooStarted = true;                            // starts the camera zoom-out (poll_intro in main.rs)
           splash.classList.add("go");
           setTimeout(() => splash.remove(), 1300);
