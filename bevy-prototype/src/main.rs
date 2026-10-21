@@ -50,6 +50,44 @@ struct Quality {
     mobile: bool,
 }
 
+/// The "zoom out" opening: the camera starts close and pulls back to its normal distance once the
+/// player taps Start on the web loading page (which sets `window.ooStarted`). Native builds
+/// run the intro at launch.
+#[derive(Resource, Default)]
+struct Intro {
+    started_at: Option<f32>,
+}
+
+const INTRO_SECS: f32 = 2.8;
+
+fn poll_intro(time: Res<Time>, mut intro: ResMut<Intro>) {
+    if intro.started_at.is_some() {
+        return;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let go = web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w, &"ooStarted".into()).ok())
+        .map(|v| v.is_truthy())
+        .unwrap_or(false);
+    #[cfg(not(target_arch = "wasm32"))]
+    let go = true;
+    if go {
+        intro.started_at = Some(time.elapsed_secs());
+    }
+}
+
+/// 0.3 (close) -> 1.0 (normal) with an ease-out.
+fn intro_zoom(time: &Time, intro: &Intro) -> f32 {
+    match intro.started_at {
+        None => 0.3,
+        Some(t0) => {
+            let k = ((time.elapsed_secs() - t0) / INTRO_SECS).clamp(0.0, 1.0);
+            let e = 1.0 - (1.0 - k).powi(3);
+            0.3 + 0.7 * e
+        }
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn detect_mobile() -> (bool, f32) {
     let Some(w) = web_sys::window() else { return (false, 1.0) };
@@ -164,6 +202,7 @@ fn main() {
         .init_resource::<FarmEntities>()
         .insert_resource(quality)
         .init_resource::<kit_ui::StickState>()
+        .init_resource::<Intro>()
         .init_resource::<WalkAmount>()
         .init_resource::<TruckSpeed>()
         .insert_resource(CamMode::Tilted)
@@ -182,16 +221,20 @@ fn main() {
                 sync_actors,
                 scenery::animate_geologist,
                 scenery::spin_wheels,
+                poll_intro,
                 follow_camera,
                 update_environment,
                 update_hud,
-                kit_ui::update_bars,
-                kit_ui::update_buttons,
-                kit_ui::update_pack,
-                kit_ui::update_map,
-                kit_ui::fit_map_image,
-                kit_ui::update_cards,
-                kit_ui::scale_fonts,
+                (
+                    kit_ui::update_bars,
+                    kit_ui::update_buttons,
+                    kit_ui::update_pack,
+                    kit_ui::update_map,
+                    kit_ui::fit_map_image,
+                    kit_ui::update_cards,
+                    kit_ui::scale_fonts,
+                )
+                    .chain(),
                 dev_hooks,
             )
                 .chain(),
@@ -745,6 +788,7 @@ fn sync_actors(
 
 fn follow_camera(
     time: Res<Time>,
+    intro: Res<Intro>,
     game: Res<GameRes>,
     mode: Res<CamMode>,
     mut cam: Query<&mut Transform, With<MainCamera>>,
@@ -758,7 +802,7 @@ fn follow_camera(
         CamMode::Tilted => Vec3::new(0.0, 13.0, 10.5),
         CamMode::Side => Vec3::new(0.0, 3.2, 15.0),
     };
-    let mut desired = target + offset;
+    let mut desired = target + offset * intro_zoom(&time, &intro);
     // never dip under a hill that rises behind the player
     desired.y = desired.y.max(ground_y(&g.terrain, desired.x / S, -desired.z / S) + 1.8);
     let k = 1.0 - (-7.0 * time.delta_secs()).exp();

@@ -30,6 +30,7 @@ bevy = { version = "0.19", default-features = false, features = ["multi_threaded
 bevy = { version = "0.19", default-features = false, features = ["web"] }
 # phone detection (user agent) and the device pixel ratio
 web-sys = { version = "0.3", features = ["Window", "Navigator"] }
+js-sys = "0.3"
 
 [profile.dev]
 opt-level = 1

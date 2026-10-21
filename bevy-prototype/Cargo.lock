@@ -3534,6 +3534,7 @@ name = "outcrops_bevy"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "js-sys",
  "web-sys",
 ]
 

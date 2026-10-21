@@ -9,11 +9,7 @@
   <style>
     html, body { margin: 0; height: 100%; height: 100dvh; background: #0b0f0a; overflow: hidden; touch-action: none;
       overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
-    canvas#bevy { display: block; width: 100%; height: 100%; outline: none; transform-origin: 50% 55%; }
-    /* the zoom-out reveal: the world starts magnified and soft, then pulls back to normal */
-    canvas#bevy.intro { transform: scale(1.9); filter: blur(7px) brightness(.7); }
-    canvas#bevy.zoomout { transform: scale(1); filter: none;
-      transition: transform 2.4s cubic-bezier(.16,.84,.24,1), filter 2.0s ease-out; }
+    canvas#bevy { display: block; width: 100%; height: 100%; outline: none; }
 
     /* ---- opening / loading page ---- */
     #splash { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
@@ -47,20 +43,23 @@
     #splash.ready #start { display: inline-block; }
     #splash.ready #bar { opacity: .55; }
     @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
-    #splash.zoom { background: transparent; }
-    #splash.zoom > * { opacity: 0; transform: scale(1.25); transition: opacity .6s ease, transform 1.2s ease; }
+    #splash.go { opacity: 0; visibility: hidden; transition: opacity 1.1s ease, visibility 1.1s; pointer-events: none; }
     #err { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 20; display: none; max-height: 40vh; overflow: auto;
       padding: 10px 12px; border-radius: 8px; background: #3a1410ee; color: #ffd0c6; font: 12px/1.4 ui-monospace, monospace;
       white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
+    #rotate { position: fixed; inset: 0; z-index: 15; display: none; place-items: center; text-align: center; padding: 30px;
+      background: #0b0f0acc; color: #efe6c8; font: 600 20px/1.5 system-ui, sans-serif; pointer-events: none; }
+    @media (orientation: portrait) and (pointer: coarse) { #rotate.on { display: grid; } }
     #retry { display: none; font: 600 15px system-ui, sans-serif; padding: 10px 22px; border: 0; border-radius: 8px;
       background: #f0a04a; color: #20150a; cursor: pointer; }
     #splash.error #retry { display: inline-block; }
   </style>
 </head>
 <body>
-  <canvas id="bevy" class="intro"></canvas>
+  <canvas id="bevy"></canvas>
 
   <div id="err"></div>
+  <div id="rotate" class="on">Rotate your phone to landscape<br>for the best view</div>
 
   <div id="splash">
     <h1>Outcrops <span>Odyssey</span></h1>
@@ -152,16 +151,17 @@
         started = true;
         progress(1, "Ready!");
         splash.classList.add("ready");
-        const go = async () => {
+        const go = () => {
           $("start").onclick = null;
-          try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
-          try { await screen.orientation?.lock?.("landscape"); } catch {}
-          const cv = $("bevy");
-          splash.classList.add("zoom");
-          void cv.offsetWidth;                  // commit the 'intro' state before animating out of it
-          cv.classList.add("zoomout");
-          setTimeout(() => cv.classList.remove("intro", "zoomout"), 2600);
-          setTimeout(() => splash.remove(), 1500);
+          // the game's camera zoom-out starts from this flag (see poll_intro in main.rs)
+          window.ooStarted = true;
+          splash.classList.add("go");
+          setTimeout(() => splash.remove(), 1300);
+          // fullscreen + landscape are best-effort extras; a failure must never block the game
+          setTimeout(async () => {
+            try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
+            try { await screen.orientation?.lock?.("landscape"); } catch {}
+          }, 400);
         };
         $("start").onclick = go;
         addEventListener("keydown", (e) => { if (e.key === "Enter") go(); }, { once: true });
