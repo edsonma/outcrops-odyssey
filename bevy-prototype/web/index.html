@@ -23,7 +23,7 @@
     #splash h1 span { color: #f0a04a; }
     #splash .sub { margin: -10px 0 0; font-size: clamp(14px, 2.6vw, 20px); color: #b9c8a0; font-style: italic; }
     /* the outcrop picture: dark and grey at first, revealed in colour left-to-right as the game downloads */
-    #strata { position: relative; width: min(560px, 88vw); aspect-ratio: 1833 / 858; border-radius: 14px; overflow: hidden;
+    #strata { position: relative; width: min(560px, 88vw, calc(36vh * 2.136)); aspect-ratio: 1833 / 858; border-radius: 14px; overflow: hidden;
       box-shadow: 0 10px 34px #000a; background: #1c1c18; }
     #strata img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
     #strata img.base { filter: grayscale(1) brightness(.35) contrast(1.1); }
@@ -47,9 +47,14 @@
     #err { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 20; display: none; max-height: 40vh; overflow: auto;
       padding: 10px 12px; border-radius: 8px; background: #3a1410ee; color: #ffd0c6; font: 12px/1.4 ui-monospace, monospace;
       white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
-    #rotate { position: fixed; inset: 0; z-index: 15; display: none; place-items: center; text-align: center; padding: 30px;
-      background: #0b0f0acc; color: #efe6c8; font: 600 20px/1.5 system-ui, sans-serif; pointer-events: none; }
-    @media (orientation: portrait) and (pointer: coarse) { #rotate.on { display: grid; } }
+    /* short screens (a phone held sideways, with the browser bar): compact so the button stays visible */
+    @media (max-height: 560px) {
+      #splash { gap: 8px; padding: 6px 16px; }
+      #splash h1 { font-size: clamp(26px, 8vh, 44px); }
+      #splash .sub, #tip { display: none; }
+      #bar { width: min(560px, 88vw, calc(36vh * 2.136)); }
+      #start { padding: 8px 28px; font-size: 17px; }
+    }
     #retry { display: none; font: 600 15px system-ui, sans-serif; padding: 10px 22px; border: 0; border-radius: 8px;
       background: #f0a04a; color: #20150a; cursor: pointer; }
     #splash.error #retry { display: inline-block; }
@@ -59,7 +64,6 @@
   <canvas id="bevy"></canvas>
 
   <div id="err"></div>
-  <div id="rotate" class="on">Rotate your phone to landscape<br>for the best view</div>
 
   <div id="splash">
     <h1>Outcrops <span>Odyssey</span></h1>
@@ -156,17 +160,19 @@
         started = true;
         progress(1, "Ready!");
         splash.classList.add("ready");
-        const go = () => {
+        // Start = fullscreen + landscape, requested right inside the tap (browsers only allow it from a
+        // user gesture). Both are best-effort: if refused, the game just starts as it is.
+        const go = async () => {
+          if (go.done) return;
+          go.done = true;
           $("start").onclick = null;
-          // the game's camera zoom-out starts from this flag (see poll_intro in main.rs)
-          window.ooStarted = true;
+          $("start").textContent = "Starting…";
+          try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
+          try { await screen.orientation?.lock?.("landscape"); } catch {}
+          await new Promise((r) => setTimeout(r, 600));       // let the canvas settle at its new size
+          window.ooStarted = true;                            // starts the camera zoom-out (poll_intro in main.rs)
           splash.classList.add("go");
           setTimeout(() => splash.remove(), 1300);
-          // fullscreen + landscape are best-effort extras; a failure must never block the game
-          setTimeout(async () => {
-            try { await document.documentElement.requestFullscreen?.({ navigationUI: "hide" }); } catch {}
-            try { await screen.orientation?.lock?.("landscape"); } catch {}
-          }, 400);
         };
         $("start").onclick = go;
         addEventListener("keydown", (e) => { if (e.key === "Enter") go(); }, { once: true });
