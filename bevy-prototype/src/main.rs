@@ -26,6 +26,7 @@ mod kit;
 
 mod terrain_view;
 mod kit_ui;
+mod map_view;
 mod scenery;
 
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
@@ -184,7 +185,13 @@ fn main() {
                 follow_camera,
                 update_environment,
                 update_hud,
-                kit_ui::update_kit_ui,
+                kit_ui::update_bars,
+                kit_ui::update_buttons,
+                kit_ui::update_pack,
+                kit_ui::update_map,
+                kit_ui::fit_map_image,
+                kit_ui::update_cards,
+                kit_ui::scale_fonts,
                 dev_hooks,
             )
                 .chain(),
@@ -389,26 +396,32 @@ fn spawn_camp(commands: &mut Commands, t: &terrain::Terrain, meshes: &mut Assets
 
 // ============================================================================ HUD
 fn setup_hud(mut commands: Commands) {
-    let text = |size: f32, color: Color| (Text::new(""), TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }, TextColor(color));
+    use kit_ui::BaseFont;
+    let text = |size: f32, color: Color| {
+        (Text::new(""), TextFont { font_size: bevy::text::FontSize::Px(size), ..default() }, TextColor(color), BaseFont(size))
+    };
     commands.spawn((
         HudText,
         text(22.0, Color::WHITE),
-        Node { position_type: PositionType::Absolute, top: Val::Px(10.0), left: Val::Px(14.0), ..default() },
+        Node { position_type: PositionType::Absolute, top: Val::Px(8.0), left: Val::Px(12.0), ..default() },
     ));
     commands.spawn((
         HintText,
         text(24.0, Color::srgb(1.0, 0.97, 0.8)),
-        Node { position_type: PositionType::Absolute, bottom: Val::Px(26.0), left: Val::Percent(30.0), ..default() },
+        TextLayout::justify(Justify::Center),
+        Node { position_type: PositionType::Absolute, bottom: Val::Vh(3.0), left: Val::Percent(22.0), width: Val::Percent(48.0), justify_content: JustifyContent::Center, ..default() },
     ));
     commands.spawn((
         BannerText,
         text(30.0, Color::WHITE),
-        Node { position_type: PositionType::Absolute, top: Val::Px(70.0), left: Val::Percent(22.0), ..default() },
+        TextLayout::justify(Justify::Center),
+        Node { position_type: PositionType::Absolute, top: Val::Vh(16.0), left: Val::Percent(15.0), width: Val::Percent(60.0), justify_content: JustifyContent::Center, ..default() },
     ));
     commands.spawn((
         LogText,
         text(18.0, Color::srgb(0.9, 0.95, 0.85)),
-        Node { position_type: PositionType::Absolute, top: Val::Px(10.0), right: Val::Px(14.0), ..default() },
+        // under the map / cards / view buttons
+        Node { position_type: PositionType::Absolute, top: Val::Vh(12.0), right: Val::Px(12.0), ..default() },
     ));
 }
 
@@ -810,6 +823,7 @@ fn set_text(t: &mut Text, new: String) {
 
 fn update_hud(
     game: Res<GameRes>,
+    q: Res<Quality>,
     mode: Res<CamMode>,
     mut hud: Query<&mut Text, (With<HudText>, Without<HintText>, Without<BannerText>, Without<LogText>)>,
     mut hint: Query<&mut Text, (With<HintText>, Without<HudText>, Without<BannerText>, Without<LogText>)>,
@@ -840,21 +854,23 @@ fn update_hud(
         if g.water <= 0.0 {
             lines.push("Water - EMPTY".into());
         }
-        lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
+        if !q.mobile {
+            lines.push(format!("[V] camera: {}   [B] backpack", if *mode == CamMode::Tilted { "tilted" } else { "side" }));
+        }
         set_text(&mut t, if g.ui_mode == UiMode::Backpack { String::new() } else { ascii(&lines.join("\n")) });
     }
     if let Ok(mut t) = hint.single_mut() {
         let msg = match g.phase {
-            Phase::Basecamp if g.near_truck() => "Press E to board the truck".into(),
-            Phase::Basecamp => "Walk to the truck on the road below camp (WASD / click)".into(),
-            Phase::Exploring if g.player_at_camp() => "Press E (TRUCK) to rest at camp and end the day".into(),
-            Phase::Exploring if g.player_on_road() => "Press E to call the truck back to basecamp".into(),
-            Phase::Exploring if g.nearest_outcrop().is_some() => "SPACE (or click the rock) to break it".into(),
-            Phase::Exploring if g.pickaxe.broken() => "Pickaxe broken - press B for a new one".into(),
-            Phase::Exploring if g.near_water() && g.water < kit::WATER_MAX - 0.5 => "Press F to fill your bottle".into(),
-            Phase::Exploring if g.near_tree() && g.apples + g.sandwiches > 0 && g.energy <= kit::NOT_HUNGRY_ABOVE => "Shade here - press F to eat".into(),
+            Phase::Basecamp if g.near_truck() => "Board the truck (truck button / E)".into(),
+            Phase::Basecamp => "Walk to the truck on the road below camp".into(),
+            Phase::Exploring if g.player_at_camp() => "Truck button / E: rest at camp and end the day".into(),
+            Phase::Exploring if g.player_on_road() => "Truck button / E: call the truck back to camp".into(),
+            Phase::Exploring if g.nearest_outcrop().is_some() => "Pickaxe button (or tap the rock) to break it".into(),
+            Phase::Exploring if g.pickaxe.broken() => "Pickaxe broken - open the backpack for a new one".into(),
+            Phase::Exploring if g.near_water() && g.water < kit::WATER_MAX - 0.5 => "Water button / F: fill your bottle".into(),
+            Phase::Exploring if g.near_tree() && g.apples + g.sandwiches > 0 && g.energy <= kit::NOT_HUNGRY_ABOVE => "Shade here - water button / F: eat".into(),
             Phase::Exploring if g.minutes_to_sunset() <= 120 => format!("Sunset in {} min - reach a main road!", g.minutes_to_sunset()),
-            Phase::GameOver => "GAME OVER - night fell off the road. Press ENTER to start over".into(),
+            Phase::GameOver => "GAME OVER - night fell off the road. Tap the truck button to start over".into(),
             Phase::Sleeping => format!("Day {} complete - resting...", g.day),
             _ => String::new(),
         };
@@ -932,6 +948,8 @@ fn dev_hooks(mut commands: Commands, mut game: ResMut<GameRes>, mut frame: Local
                 "noon" => g.clock_ticks = 7 * 60 * TICKS_PER_MINUTE,
                 "sunset" => g.clock_ticks = (12 * 60 + 35) * TICKS_PER_MINUTE,
                 "night" => g.phase = Phase::Sleeping,
+                "map" => g.ui_mode = UiMode::Map,
+                "cards" => g.ui_mode = UiMode::Cards,
                 "road" => g.player.x -= 400.0,
                 _ => {}
             }
