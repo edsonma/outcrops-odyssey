@@ -24,21 +24,16 @@
       text-shadow: 0 3px 0 #0006, 0 0 40px #e8a24a55; }
     #splash h1 span { color: #f0a04a; }
     #splash .sub { margin: -10px 0 0; font-size: clamp(14px, 2.6vw, 20px); color: #b9c8a0; font-style: italic; }
-    /* a little stack of rock strata that fills as the game downloads */
-    #strata { position: relative; width: min(340px, 74vw); height: 120px; border-radius: 6px; overflow: hidden;
-      box-shadow: 0 8px 28px #0008; background: #1c1c18; }
-    #strata i { position: absolute; left: 0; right: 0; display: block; }
-    #strata .fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0%; transition: height .25s ease-out; overflow: hidden; }
-    #strata .fill i:nth-child(1) { bottom: 0;    height: 20%; background: #7a4a2b; }
-    #strata .fill i:nth-child(2) { bottom: 20%;  height: 16%; background: #b87b4a; }
-    #strata .fill i:nth-child(3) { bottom: 36%;  height: 22%; background: #d8b98a; }
-    #strata .fill i:nth-child(4) { bottom: 58%;  height: 14%; background: #8c8f6a; }
-    #strata .fill i:nth-child(5) { bottom: 72%;  height: 16%; background: #c9a36a; }
-    #strata .fill i:nth-child(6) { bottom: 88%;  height: 12%; background: #5f8a3e; }
-    #strata .hammer { position: absolute; right: 10px; top: 6px; font-size: 26px; transform-origin: 80% 90%;
-      animation: tap 0.9s ease-in-out infinite; }
+    /* the outcrop picture: dark and grey at first, revealed in colour left-to-right as the game downloads */
+    #strata { position: relative; width: min(560px, 88vw); aspect-ratio: 1833 / 858; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 10px 34px #000a; background: #1c1c18; }
+    #strata img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
+    #strata img.base { filter: grayscale(1) brightness(.35) contrast(1.1); }
+    #strata img.lit { clip-path: inset(0 100% 0 0); transition: clip-path .25s ease-out; }
+    #strata .hammer { position: absolute; right: 14px; top: 10px; font-size: 30px; transform-origin: 80% 90%;
+      animation: tap 0.9s ease-in-out infinite; filter: drop-shadow(0 2px 3px #0008); }
     @keyframes tap { 0%,100% { transform: rotate(-18deg); } 50% { transform: rotate(22deg); } }
-    #bar { width: min(340px, 74vw); height: 8px; border-radius: 4px; background: #ffffff1c; overflow: hidden; }
+    #bar { width: min(560px, 88vw); height: 8px; border-radius: 4px; background: #ffffff1c; overflow: hidden; }
     #bar > div { height: 100%; width: 0%; background: linear-gradient(90deg, #f0a04a, #ffd27a); transition: width .25s ease-out; }
     #msg { font: 15px/1.4 system-ui, sans-serif; color: #cfd8bd; min-height: 1.4em; }
     #tip { max-width: 440px; font: 14px/1.5 system-ui, sans-serif; color: #98a688; }
@@ -48,7 +43,7 @@
       background: linear-gradient(#ffc36a, #f0a04a); color: #20150a; cursor: pointer; box-shadow: 0 6px 22px #f0a04a55;
       animation: pulse 1.6s ease-in-out infinite; }
     #splash.ready #start { display: inline-block; }
-    #splash.ready #strata, #splash.ready #bar { opacity: .55; }
+    #splash.ready #bar { opacity: .55; }
     @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
     #splash.zoom { background: transparent; }
     #splash.zoom > * { opacity: 0; transform: scale(1.25); transition: opacity .6s ease, transform 1.2s ease; }
@@ -63,7 +58,7 @@
   <div id="splash">
     <h1>Outcrops <span>Odyssey</span></h1>
     <p class="sub">Read the rocks. Walk the land. Collect the cards.</p>
-    <div id="strata"><div class="fill" id="fill"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="hammer">⛏️</div></div>
+    <div id="strata"><img class="base" src="outcrop.jpg" alt=""><img class="lit" id="lit" src="outcrop.jpg" alt="Tilted rock layers in an outcrop"><div class="hammer">⛏️</div></div>
     <div id="bar"><div id="barfill"></div></div>
     <div id="msg">Preparing the expedition…</div>
     <div id="tip"></div>
@@ -86,7 +81,7 @@
     function progress(frac, msg) {
       const p = Math.max(0, Math.min(1, frac));
       $("barfill").style.width = (p * 100).toFixed(1) + "%";
-      $("fill").style.height = (p * 100).toFixed(1) + "%";
+      $("lit").style.clipPath = `inset(0 ${((1 - p) * 100).toFixed(1)}% 0 0)`;
       if (msg) $("msg").textContent = msg;
     }
     function fail(e) {

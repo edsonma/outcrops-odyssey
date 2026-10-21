@@ -29,7 +29,7 @@ FROM node:22-alpine
 WORKDIR /app
 COPY server.js package.json ./
 COPY --from=build /out ./public
-COPY bevy-prototype/web/index.html ./public/index.html
+COPY bevy-prototype/web/index.html bevy-prototype/web/outcrop.jpg ./public/
 COPY bevy-prototype/assets ./public/assets
 ENV NODE_ENV=production
 CMD ["node", "server.js"]
