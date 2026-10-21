@@ -231,3 +231,125 @@ pub fn button_input(q: Query<(&Interaction, &ActionBtn), Changed<Interaction>>, 
         }
     }
 }
+
+// ------------------------------------------------------------------ virtual stick
+/// A floating thumb-stick: touch the lower-left of the screen and drag. The same four booleans
+/// as the keyboard come out of it (8-way), so walking feels identical on every device.
+#[derive(Resource, Default)]
+pub struct StickState {
+    id: Option<u64>,
+    base: Vec2,
+    pos: Vec2,
+}
+
+const STICK_R: f32 = 62.0; // logical pixels
+const STICK_DEAD: f32 = 0.28;
+
+impl StickState {
+    pub fn owns(&self, id: u64) -> bool {
+        self.id == Some(id)
+    }
+    /// (left, right, up, down) like the arrow keys; screen-up is "up".
+    pub fn dirs(&self) -> (bool, bool, bool, bool) {
+        if self.id.is_none() {
+            return (false, false, false, false);
+        }
+        let d = (self.pos - self.base) / STICK_R;
+        if d.length() < STICK_DEAD {
+            return (false, false, false, false);
+        }
+        let n = d.normalize_or_zero();
+        (n.x < -0.38, n.x > 0.38, n.y < -0.38, n.y > 0.38)
+    }
+    fn knob(&self) -> Vec2 {
+        let d = self.pos - self.base;
+        self.base + d.clamp_length_max(STICK_R)
+    }
+}
+
+#[derive(Component)]
+pub struct StickBase;
+#[derive(Component)]
+pub struct StickKnob;
+
+pub fn setup_stick_ui(mut commands: Commands) {
+    let ring = |size: f32| Node {
+        position_type: PositionType::Absolute,
+        width: Val::Px(size),
+        height: Val::Px(size),
+        display: Display::None,
+        border_radius: BorderRadius::MAX,
+        ..default()
+    };
+    commands.spawn((StickBase, ring(STICK_R * 2.0), BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.10)), BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.45))));
+    commands.spawn((StickKnob, ring(STICK_R * 0.9), BackgroundColor(Color::srgba(1.0, 0.85, 0.5, 0.55))));
+}
+
+/// Start / drag / release the stick from touches that begin in the lower-left of the screen.
+pub fn touch_stick(
+    touches: Res<Touches>,
+    windows: Query<&Window>,
+    game: Res<GameRes>,
+    ui_buttons: Query<&Interaction, With<Button>>,
+    mut stick: ResMut<StickState>,
+    mut base: Query<&mut Node, (With<StickBase>, Without<StickKnob>)>,
+    mut knob: Query<&mut Node, (With<StickKnob>, Without<StickBase>)>,
+) {
+    let Ok(w) = windows.single() else { return };
+    let (sw, sh) = (w.width(), w.height());
+    let usable = game.0.ui_mode == UiMode::None && game.0.player_visible();
+
+    if stick.id.is_none() && usable && !ui_buttons.iter().any(|i| *i != Interaction::None) {
+        for t in touches.iter_just_pressed() {
+            let p = t.position();
+            // lower-left 55% x 62% of the screen; the action buttons live on the right
+            if p.x < sw * 0.55 && p.y > sh * 0.38 {
+                stick.id = Some(t.id());
+                stick.base = p;
+                stick.pos = p;
+                break;
+            }
+        }
+    }
+    if let Some(id) = stick.id {
+        match touches.get_pressed(id) {
+            Some(t) if usable => stick.pos = t.position(),
+            _ => stick.id = None, // released, cancelled, or a menu opened
+        }
+    }
+
+    let active = stick.id.is_some();
+    let place = |n: &mut Node, centre: Vec2, size: f32| {
+        n.display = if active { Display::Flex } else { Display::None };
+        n.left = Val::Px(centre.x - size / 2.0);
+        n.top = Val::Px(centre.y - size / 2.0);
+    };
+    if let Ok(mut n) = base.single_mut() {
+        place(&mut n, stick.base, STICK_R * 2.0);
+        n.border = UiRect::all(Val::Px(2.0));
+    }
+    if let Ok(mut n) = knob.single_mut() {
+        place(&mut n, stick.knob(), STICK_R * 0.9);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(dx: f32, dy: f32) -> StickState {
+        StickState { id: Some(1), base: Vec2::new(100.0, 100.0), pos: Vec2::new(100.0 + dx, 100.0 + dy) }
+    }
+
+    #[test]
+    fn stick_has_a_deadzone_and_eight_directions() {
+        assert_eq!(at(5.0, 5.0).dirs(), (false, false, false, false));
+        assert_eq!(at(60.0, 0.0).dirs(), (false, true, false, false));
+        assert_eq!(at(-60.0, 0.0).dirs(), (true, false, false, false));
+        // screen y grows downward, so dragging up is negative y -> "up"
+        assert_eq!(at(0.0, -60.0).dirs(), (false, false, true, false));
+        assert_eq!(at(0.0, 60.0).dirs(), (false, false, false, true));
+        assert_eq!(at(45.0, -45.0).dirs(), (false, true, true, false));
+        assert_eq!(StickState::default().dirs(), (false, false, false, false));
+    }
+}

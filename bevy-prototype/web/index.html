@@ -2,10 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0b0f0a">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Outcrops Odyssey</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #0b0f0a; overflow: hidden; touch-action: none;
+    html, body { margin: 0; height: 100%; height: 100dvh; background: #0b0f0a; overflow: hidden; touch-action: none;
       overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
     canvas#bevy { display: block; width: 100%; height: 100%; outline: none; transform-origin: 50% 55%; }
     /* the zoom-out reveal: the world starts magnified and soft, then pulls back to normal */
@@ -47,6 +49,9 @@
     @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
     #splash.zoom { background: transparent; }
     #splash.zoom > * { opacity: 0; transform: scale(1.25); transition: opacity .6s ease, transform 1.2s ease; }
+    #err { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 20; display: none; max-height: 40vh; overflow: auto;
+      padding: 10px 12px; border-radius: 8px; background: #3a1410ee; color: #ffd0c6; font: 12px/1.4 ui-monospace, monospace;
+      white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
     #retry { display: none; font: 600 15px system-ui, sans-serif; padding: 10px 22px; border: 0; border-radius: 8px;
       background: #f0a04a; color: #20150a; cursor: pointer; }
     #splash.error #retry { display: inline-block; }
@@ -54,6 +59,8 @@
 </head>
 <body>
   <canvas id="bevy" class="intro"></canvas>
+
+  <div id="err"></div>
 
   <div id="splash">
     <h1>Outcrops <span>Odyssey</span></h1>
@@ -84,6 +91,20 @@
       $("lit").style.clipPath = `inset(0 ${((1 - p) * 100).toFixed(1)}% 0 0)`;
       if (msg) $("msg").textContent = msg;
     }
+    // phones have no console: show what went wrong right on the page (select + copy to report it)
+    const seen = new Set();
+    function showError(msg) {
+      if (String(msg).includes("Using exceptions for control flow")) return;
+      const m = String(msg).slice(0, 400);
+      if (seen.has(m) || seen.size >= 3) return;
+      seen.add(m);
+      const box = $("err");
+      box.style.display = "block";
+      box.textContent += (box.textContent ? "\n\n" : "") + m + "\n" + navigator.userAgent;
+    }
+    addEventListener("error", (ev) => showError(ev.message || ev.error));
+    addEventListener("unhandledrejection", (ev) => showError(ev.reason));
+
     function fail(e) {
       splash.classList.add("error");
       progress(0, "Could not start: " + e + "  (needs a browser with WebGL2)");
@@ -116,6 +137,9 @@
     }
 
     async function main() {
+      if (!document.createElement("canvas").getContext("webgl2")) {
+        throw new Error("WebGL2 is not available in this browser. Turn on hardware acceleration in Chrome settings, or try another browser.");
+      }
       progress(0.02, "Downloading the game…");
       const { default: init } = await import("./outcrops_bevy.js");
       const wasm = fetchWasm("./outcrops_bevy_bg.wasm");

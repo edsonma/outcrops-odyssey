@@ -40,7 +40,27 @@ use std::collections::HashMap;
 use terrain_view::{ground_y, S};
 use world::*;
 
-const SPAWN_RADIUS: i32 = 2;
+/// Phones get a lighter scene: fewer chunks, fewer trees, no shadows, capped pixel density.
+#[derive(Resource, Clone, Copy)]
+struct Quality {
+    radius: i32,
+    forest_stride: usize,
+    shadows: bool,
+    mobile: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn detect_mobile() -> (bool, f32) {
+    let Some(w) = web_sys::window() else { return (false, 1.0) };
+    let ua = w.navigator().user_agent().unwrap_or_default();
+    let mobile = ["Android", "iPhone", "iPad", "Mobile"].iter().any(|k| ua.contains(k));
+    (mobile, w.device_pixel_ratio() as f32)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn detect_mobile() -> (bool, f32) {
+    (std::env::var("OO_MOBILE").is_ok(), 1.0)
+}
+
 /// Chunk meshes built per frame (see `sync_chunks`).
 const CHUNKS_PER_FRAME: usize = 2;
 
@@ -112,6 +132,13 @@ struct BannerText;
 struct LogText;
 
 fn main() {
+    let (mobile, dpr) = detect_mobile();
+    let quality = Quality { radius: if mobile { 1 } else { 2 }, forest_stride: if mobile { 2 } else { 1 }, shadows: !mobile, mobile };
+    // a phone's 3x pixel density would triple the work for no visible gain: cap it
+    let mut resolution = WindowResolution::new(1280, 720);
+    if mobile {
+        resolution = resolution.with_scale_factor_override(dpr.min(1.5));
+    }
     App::new()
         .add_plugins(DefaultPlugins.set(AssetPlugin {
             // static hosts have no .meta files; don't request them
@@ -120,7 +147,7 @@ fn main() {
         }).set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Outcrops Odyssey (Bevy prototype)".into(),
-                resolution: WindowResolution::new(1280, 720),
+                resolution,
                 canvas: Some("#bevy".into()),
                 fit_canvas_to_parent: true,
                 prevent_default_event_handling: true,
@@ -134,16 +161,19 @@ fn main() {
         .init_resource::<PendingInput>()
         .init_resource::<ChunkEntities>()
         .init_resource::<FarmEntities>()
+        .insert_resource(quality)
+        .init_resource::<kit_ui::StickState>()
         .init_resource::<WalkAmount>()
         .init_resource::<TruckSpeed>()
         .insert_resource(CamMode::Tilted)
         .insert_resource(ClearColor(Color::srgb(0.55, 0.72, 0.9)))
-        .add_systems(Startup, (setup_scene, setup_camp, setup_hud, kit_ui::setup_kit_ui).chain())
+        .add_systems(Startup, (setup_scene, setup_camp, setup_hud, kit_ui::setup_kit_ui, kit_ui::setup_stick_ui).chain())
         .add_systems(FixedUpdate, tick_game)
         .add_systems(
             Update,
             (
                 kit_ui::button_input,
+                kit_ui::touch_stick,
                 gather_input,
                 sync_level,
                 sync_chunks,
@@ -226,6 +256,7 @@ fn make_rock(seed: f32) -> Mesh {
 
 fn setup_scene(
     mut commands: Commands,
+    quality: Res<Quality>,
     assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -258,7 +289,7 @@ fn setup_scene(
     // ---- sun (updated every frame by update_environment) + soft ambient light
     commands.spawn((
         Sun,
-        DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: true, ..default() },
+        DirectionalLight { illuminance: 11_000.0, shadow_maps_enabled: quality.shadows, ..default() },
         CascadeShadowConfigBuilder {
             // WebGL2 supports a single shadow cascade (Bevy warns and clamps otherwise)
             num_cascades: if cfg!(target_arch = "wasm32") { 1 } else { 2 },
@@ -285,7 +316,7 @@ fn setup_scene(
         Transform::from_xyz(0.0, 11.0, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
         DistanceFog {
             color: Color::srgb(0.55, 0.72, 0.9),
-            falloff: bevy::pbr::FogFalloff::Linear { start: 28.0, end: 80.0 },
+            falloff: bevy::pbr::FogFalloff::Linear { start: if quality.mobile { 18.0 } else { 28.0 }, end: if quality.mobile { 52.0 } else { 80.0 } },
             ..default()
         },
         bevy::core_pipeline::tonemapping::Tonemapping::TonyMcMapface,
@@ -392,6 +423,7 @@ fn gather_input(
     game: Res<GameRes>,
     mut pend: ResMut<PendingInput>,
     mut mode: ResMut<CamMode>,
+    stick: Res<kit_ui::StickState>,
 ) {
     let p = &mut pend.0;
     p.map_pressed |= keys.just_pressed(KeyCode::KeyM);
@@ -414,7 +446,7 @@ fn gather_input(
     let screen_pos = if mouse.just_pressed(MouseButton::Left) {
         windows.single().ok().and_then(|w| w.cursor_position())
     } else {
-        touches.iter_just_pressed().next().map(|t| t.position())
+        touches.iter_just_pressed().find(|t| !stick.owns(t.id())).map(|t| t.position())
     };
     let Some(pos) = screen_pos else { return };
     match game.0.ui_mode {
@@ -438,12 +470,17 @@ fn gather_input(
     }
 }
 
-fn tick_game(keys: Res<ButtonInput<KeyCode>>, mut game: ResMut<GameRes>, mut pend: ResMut<PendingInput>) {
+fn tick_game(keys: Res<ButtonInput<KeyCode>>, stick: Res<kit_ui::StickState>, mut game: ResMut<GameRes>, mut pend: ResMut<PendingInput>) {
     let mut input = std::mem::take(&mut pend.0);
     input.left = keys.pressed(KeyCode::ArrowLeft) || keys.pressed(KeyCode::KeyA);
     input.right = keys.pressed(KeyCode::ArrowRight) || keys.pressed(KeyCode::KeyD);
     input.up = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
     input.down = keys.pressed(KeyCode::ArrowDown) || keys.pressed(KeyCode::KeyS);
+    let (l, r, u, d) = stick.dirs();
+    input.left |= l;
+    input.right |= r;
+    input.up |= u;
+    input.down |= d;
     game.0.tick(&input);
 }
 
@@ -484,6 +521,7 @@ fn sync_chunks(
     mut commands: Commands,
     game: Res<GameRes>,
     look: Res<Look>,
+    q: Res<Quality>,
     mut live: ResMut<ChunkEntities>,
     mut farms: ResMut<FarmEntities>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -494,7 +532,7 @@ fn sync_chunks(
     let (pcx, pcy) = world_to_chunk(fx, fy);
 
     // despawn chunks that fell out of range
-    let stale: Vec<_> = live.0.keys().copied().filter(|(x, y)| (x - pcx).abs() > SPAWN_RADIUS + 1 || (y - pcy).abs() > SPAWN_RADIUS + 1).collect();
+    let stale: Vec<_> = live.0.keys().copied().filter(|(x, y)| (x - pcx).abs() > q.radius + 1 || (y - pcy).abs() > q.radius + 1).collect();
     for k in stale {
         if let Some(e) = live.0.remove(&k) {
             commands.entity(e).despawn();
@@ -503,8 +541,8 @@ fn sync_chunks(
 
     // building a chunk (mesh + trees + roads) is the heaviest thing the game does, so at most
     // CHUNKS_PER_FRAME are made per frame, nearest first: no hitch when walking into new ground
-    let mut wanted: Vec<(i32, i32)> = (-SPAWN_RADIUS..=SPAWN_RADIUS)
-        .flat_map(|dx| (-SPAWN_RADIUS..=SPAWN_RADIUS).map(move |dy| (pcx + dx, pcy + dy)))
+    let mut wanted: Vec<(i32, i32)> = (-q.radius..=q.radius)
+        .flat_map(|dx| (-q.radius..=q.radius).map(move |dy| (pcx + dx, pcy + dy)))
         .filter(|k| !live.0.contains_key(k))
         .collect();
     wanted.sort_by_key(|(x, y)| (x - pcx).pow(2) + (y - pcy).pow(2));
@@ -542,7 +580,8 @@ fn sync_chunks(
                     // trees: the glTF scene, varied by a stable per-position hash. Loose trees on
                     // open ground, plus the dense forest that fills the impassable forest cells.
                     let loose = chunk.trees.iter().map(|p| (p.x, p.y, 0.8f32));
-                    let dense = geo.forest.iter().map(|&(x, y)| (x, y, 0.8f32));
+                    let stride = q.forest_stride;
+                    let dense = geo.forest.iter().enumerate().filter(move |(i, _)| i % stride == 0).map(|(_, &(x, y))| (x, y, 0.8f32));
                     for (i, (x, y, size)) in loose.chain(dense).enumerate() {
                         let h = hash01(&format!("{cx}_{cy}_t{i}"));
                         c.spawn((
